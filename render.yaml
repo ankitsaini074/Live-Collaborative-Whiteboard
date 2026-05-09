@@ -2,7 +2,6 @@ services:
   - type: pserv
     name: whiteboard-redis
     plan: free
-    maxmemory: 256
     ipAllowList: []
 
   - type: web
