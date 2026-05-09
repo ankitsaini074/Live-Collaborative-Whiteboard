@@ -22,13 +22,13 @@ let socket: Socket | null = null;
 let currentRoomId: string | null = null;
 let currentLamportClock: number = 0;
 
-const SOCKET_URL = 'http://localhost:3001';
+const SOCKET_URL = '';
 
 export const connectSocket = (): Socket => {
   if (socket?.connected) return socket;
 
   socket = io(SOCKET_URL, {
-    transports: ['websocket'],
+    transports: ['websocket', 'polling'],
     reconnection: true,
     reconnectionDelay: 1000,
     reconnectionAttempts: 5,
@@ -83,53 +83,53 @@ export const leaveRoom = (payload: LeaveRoomPayload): void => {
   socket?.emit('leave-room', payload);
 };
 
-export const sendDrawStroke = (payload: Omit<DrawStrokePayload, 'lamportClock'>): void => {
+export const sendDrawStroke = (payload: Omit<DrawStrokePayload, 'lamportClock' | 'type' | 'timestamp'>): void => {
   const clock = incrementLocalLamportClock();
-  socket?.emit('draw-stroke', { ...payload, lamportClock: clock });
+  socket?.emit('draw-stroke', { ...payload, type: 'draw-stroke', timestamp: Date.now(), lamportClock: clock });
 };
 
-export const sendDrawShape = (payload: Omit<DrawShapePayload, 'lamportClock'>): void => {
+export const sendDrawShape = (payload: Omit<DrawShapePayload, 'lamportClock' | 'type' | 'timestamp'>): void => {
   const clock = incrementLocalLamportClock();
-  socket?.emit('draw-shape', { ...payload, lamportClock: clock });
+  socket?.emit('draw-shape', { ...payload, type: 'draw-shape', timestamp: Date.now(), lamportClock: clock });
 };
 
 export const sendCursorMove = (payload: CursorMovePayload): void => {
   socket?.emit('cursor-move', payload);
 };
 
-export const sendAddNote = (payload: Omit<AddNotePayload, 'lamportClock'>): void => {
+export const sendAddNote = (payload: Omit<AddNotePayload, 'lamportClock' | 'type' | 'timestamp'>): void => {
   const clock = incrementLocalLamportClock();
-  socket?.emit('add-note', { ...payload, lamportClock: clock });
+  socket?.emit('add-note', { ...payload, type: 'add-note', timestamp: Date.now(), lamportClock: clock });
 };
 
-export const sendUpdateNote = (payload: Omit<UpdateNotePayload, 'lamportClock'>): void => {
+export const sendUpdateNote = (payload: Omit<UpdateNotePayload, 'lamportClock' | 'type' | 'timestamp'>): void => {
   const clock = incrementLocalLamportClock();
-  socket?.emit('update-note', { ...payload, lamportClock: clock });
+  socket?.emit('update-note', { ...payload, type: 'update-note', timestamp: Date.now(), lamportClock: clock });
 };
 
-export const sendMoveNote = (payload: Omit<MoveNotePayload, 'lamportClock'>): void => {
+export const sendMoveNote = (payload: Omit<MoveNotePayload, 'lamportClock' | 'type' | 'timestamp'>): void => {
   const clock = incrementLocalLamportClock();
-  socket?.emit('move-note', { ...payload, lamportClock: clock });
+  socket?.emit('move-note', { ...payload, type: 'move-note', timestamp: Date.now(), lamportClock: clock });
 };
 
-export const sendDeleteNote = (payload: Omit<DeleteNotePayload, 'lamportClock'>): void => {
+export const sendDeleteNote = (payload: Omit<DeleteNotePayload, 'lamportClock' | 'type' | 'timestamp'>): void => {
   const clock = incrementLocalLamportClock();
-  socket?.emit('delete-note', { ...payload, lamportClock: clock });
+  socket?.emit('delete-note', { ...payload, type: 'delete-note', timestamp: Date.now(), lamportClock: clock });
 };
 
-export const sendAddText = (payload: Omit<AddTextPayload, 'lamportClock'>): void => {
+export const sendAddText = (payload: Omit<AddTextPayload, 'lamportClock' | 'type' | 'timestamp'>): void => {
   const clock = incrementLocalLamportClock();
-  socket?.emit('add-text', { ...payload, lamportClock: clock });
+  socket?.emit('add-text', { ...payload, type: 'add-text', timestamp: Date.now(), lamportClock: clock });
 };
 
-export const sendDeleteText = (payload: Omit<DeleteTextPayload, 'lamportClock'>): void => {
+export const sendDeleteText = (payload: Omit<DeleteTextPayload, 'lamportClock' | 'type' | 'timestamp'>): void => {
   const clock = incrementLocalLamportClock();
-  socket?.emit('delete-text', { ...payload, lamportClock: clock });
+  socket?.emit('delete-text', { ...payload, type: 'delete-text', timestamp: Date.now(), lamportClock: clock });
 };
 
-export const sendClearBoard = (payload: Omit<ClearBoardPayload, 'lamportClock'>): void => {
+export const sendClearBoard = (payload: Omit<ClearBoardPayload, 'lamportClock' | 'type' | 'timestamp'>): void => {
   const clock = incrementLocalLamportClock();
-  socket?.emit('clear-board', { ...payload, lamportClock: clock });
+  socket?.emit('clear-board', { ...payload, type: 'clear-board', timestamp: Date.now(), lamportClock: clock });
 };
 
 export const onRoomState = (callback: (payload: RoomStatePayload) => void): void => {
