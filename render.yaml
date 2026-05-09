@@ -6,10 +6,9 @@ services:
 
   - type: web
     name: whiteboard-backend
-    env: node
-    rootDir: whiteboard/server
-    buildCommand: cp -r ../../shared ./ && npm install --include=dev && npm run build
-    startCommand: npm start
+    env: docker
+    dockerContext: .
+    dockerfilePath: ./whiteboard/server/Dockerfile
     envVars:
       - key: PORT
         value: 10000
