@@ -1,0 +1,7 @@
+node_modules/
+.vite/
+.claude/
+.code-review-graph/
+*.log
+.DS_Store
+dist/
