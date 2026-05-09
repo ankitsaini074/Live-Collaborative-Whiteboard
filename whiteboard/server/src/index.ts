@@ -20,10 +20,15 @@ app.use('/api/rooms', roomsRouter);
 const httpServer = createServer(app);
 
 // Create Socket.io server
+const allowedOrigins = process.env.FRONTEND_URL
+  ? [process.env.FRONTEND_URL]
+  : ['http://localhost:5000', 'http://192.168.1.4:5000'];
+
 const io = new SocketIOServer(httpServer, {
   cors: {
-    origin: '*',
+    origin: allowedOrigins,
     methods: ['GET', 'POST'],
+    credentials: true,
   },
 });
 

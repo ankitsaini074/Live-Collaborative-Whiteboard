@@ -1,0 +1,43 @@
+services:
+  - type: web
+    name: whiteboard-backend
+    env: node
+    repo: https://github.com/ankitsaini074/Live-Collaborative-Whiteboard.git
+    rootDir: whiteboard/server
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: NODE_ENV
+        value: production
+      - key: FRONTEND_URL
+        fromService:
+          type: web
+          name: whiteboard-frontend
+          property: url
+      - key: REDIS_URL
+        fromService:
+          type: pserv
+          name: whiteboard-redis
+          property: connectionString
+
+  - type: web
+    name: whiteboard-frontend
+    env: static
+    repo: https://github.com/ankitsaini074/Live-Collaborative-Whiteboard.git
+    rootDir: whiteboard/client
+    buildCommand: npm install && npm run build
+    publishDir: dist
+    envVars:
+      - key: VITE_SOCKET_URL
+        fromService:
+          type: web
+          name: whiteboard-backend
+          property: url
+
+  - type: pserv
+    name: whiteboard-redis
+    plan: free
+    maxmemory: 256
+    ipAllowList: []

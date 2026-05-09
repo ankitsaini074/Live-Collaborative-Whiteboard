@@ -22,7 +22,7 @@ let socket: Socket | null = null;
 let currentRoomId: string | null = null;
 let currentLamportClock: number = 0;
 
-const SOCKET_URL = '';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || '';
 
 export const connectSocket = (): Socket => {
   if (socket?.connected) return socket;
