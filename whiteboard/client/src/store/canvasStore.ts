@@ -1,7 +1,6 @@
 import { create } from 'zustand';
 import type { Command } from '../../../shared/types';
 
-// Draw types
 export interface DrawPoint {
   x: number;
   y: number;
@@ -38,6 +37,7 @@ export interface Note {
 
 export interface Text {
   textId: string;
+  type: 'text';
   x: number;
   y: number;
   content: string;
@@ -46,7 +46,6 @@ export interface Text {
   lamportClock?: number;
 }
 
-// Remote cursor tracking
 export interface RemoteCursor {
   userId: string;
   username: string;
@@ -56,11 +55,9 @@ export interface RemoteCursor {
   lastSeen: number;
 }
 
-// Tool types
 export type ToolType = 'brush' | 'eraser' | 'rect' | 'circle' | 'line' | 'arrow' | 'text' | 'note';
 
 interface CanvasState {
-  // Drawing state
   strokes: (Stroke | Shape | Text)[];
   notes: Note[];
   currentStroke: DrawPoint[];
@@ -69,28 +66,23 @@ interface CanvasState {
   currentSize: number;
   currentTool: ToolType;
 
-  // Room and user info
   roomId: string;
   userId: string;
   username: string;
   userColor: string;
 
-  // Lamport clock for event ordering
   lamportClock: number;
   incrementLamportClock: () => number;
   updateLamportClock: (clock: number) => void;
 
-  // Remote cursors
   remoteCursors: Map<string, RemoteCursor>;
 
-  // Zoom and pan
   zoom: number;
   pan: { x: number; y: number };
   setZoom: (zoom: number) => void;
   setPan: (x: number, y: number) => void;
   resetView: () => void;
 
-  // Undo/redo
   undoStack: Command[];
   redoStack: Command[];
   executeCommand: (command: Command) => void;
@@ -99,7 +91,6 @@ interface CanvasState {
   canUndo: () => boolean;
   canRedo: () => boolean;
 
-  // Actions
   setRoomId: (roomId: string) => void;
   setUserInfo: (userId: string, username: string, color: string) => void;
   setColor: (color: string) => void;
@@ -108,54 +99,52 @@ interface CanvasState {
   startStroke: (point: DrawPoint) => void;
   addPoint: (point: DrawPoint) => void;
   endStroke: () => void;
+  addShape: (shape: Shape) => void;
   addRemoteStroke: (stroke: Stroke) => void;
   addRemoteShape: (shape: Shape) => void;
   addRemoteText: (text: Text) => void;
   addNote: (note: Omit<Note, 'userId' | 'lamportClock'>) => void;
-  updateNote: (noteId: string, content: string, oldContent?: string) => void;
-  moveNote: (noteId: string, x: number, y: number, oldX?: number, oldY?: number) => void;
-  deleteNote: (noteId: string, note?: Note) => void;
+  updateNote: (noteId: string, content: string) => void;
+  moveNote: (noteId: string, x: number, y: number) => void;
+  deleteNote: (noteId: string) => void;
   addRemoteNote: (note: Note) => void;
-  addText: (text: Omit<Text, 'textId' | 'lamportClock'> & { textId?: string }) => void;
+  addText: (text: Omit<Text, 'lamportClock'> & { textId?: string }) => void;
   addRemoteTextObject: (text: Text) => void;
-  deleteText: (textId: string, text?: Text) => void;
+  deleteText: (textId: string) => void;
   clearCanvas: () => void;
   loadRoomState: (strokes: (Stroke | Shape | Text)[], notes: Note[]) => void;
 
-  // Cursor actions
   updateRemoteCursor: (cursor: Omit<RemoteCursor, 'lastSeen'>) => void;
   removeRemoteCursor: (userId: string) => void;
   cleanupOldCursors: () => void;
 
-  // Current shape preview
   setCurrentShapeStart: (point: DrawPoint | null) => void;
 }
 
-// Preset color palette
 export const COLORS = [
-  '#000000', // black
-  '#FF0000', // red
-  '#FF7F00', // orange
-  '#FFFF00', // yellow
-  '#00FF00', // green
-  '#0000FF', // blue
-  '#8B00FF', // violet
-  '#FFFFFF', // white
+  '#1a1a1a',
+  '#ef4444',
+  '#f97316',
+  '#eab308',
+  '#22c55e',
+  '#3b82f6',
+  '#8b5cf6',
+  '#ec4899',
+  '#06b6d4',
+  '#ffffff',
 ];
 
-// Note colors
 export const NOTE_COLORS = [
-  '#FEF3C7', // yellow
-  '#DBEAFE', // blue
-  '#D1FAE5', // green
-  '#FEE2E2', // red
-  '#EDE9FE', // purple
+  '#fef9c3',
+  '#dbeafe',
+  '#dcfce7',
+  '#fee2e2',
+  '#ede9fe',
 ];
 
-// Generate random color for user
 const generateUserColor = (): string => {
-  const hue = Math.floor(Math.random() * 360);
-  return `hsl(${hue}, 70%, 50%)`;
+  const colors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#3b82f6', '#8b5cf6', '#ec4899', '#06b6d4'];
+  return colors[Math.floor(Math.random() * colors.length)];
 };
 
 export const useCanvasStore = create<CanvasState>((set, get) => ({
@@ -180,16 +169,15 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   setRoomId: (roomId) => set({ roomId, lamportClock: 0, undoStack: [], redoStack: [], zoom: 1, pan: { x: 0, y: 0 } }),
   setUserInfo: (userId, username, color) => set({ userId, username, userColor: color }),
 
+  // FIX: was `set({ currentTool })` — captured outer scope instead of arg
   setColor: (color) => set({ currentColor: color, currentTool: 'brush' }),
   setSize: (size) => set({ currentSize: size }),
-  setTool: (tool) => set({ currentTool }),
+  setTool: (tool) => set({ currentTool: tool }),
 
-  // Zoom and pan
-  setZoom: (zoom) => set({ zoom: Math.max(0.25, Math.min(4, zoom)) }),
+  setZoom: (zoom) => set({ zoom: Math.max(0.1, Math.min(5, zoom)) }),
   setPan: (x, y) => set({ pan: { x, y } }),
   resetView: () => set({ zoom: 1, pan: { x: 0, y: 0 } }),
 
-  // Lamport clock management
   incrementLamportClock: () => {
     const newClock = get().lamportClock + 1;
     set({ lamportClock: newClock });
@@ -200,22 +188,19 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     lamportClock: Math.max(state.lamportClock, clock) + 1,
   })),
 
-  // Command execution for undo/redo
   executeCommand: (command) => set((state) => {
     command.execute();
     return {
       undoStack: [...state.undoStack, command],
-      redoStack: [], // Clear redo stack on new command
+      redoStack: [],
     };
   }),
 
   undo: () => set((state) => {
     const { undoStack, redoStack } = state;
     if (undoStack.length === 0) return {};
-
     const command = undoStack[undoStack.length - 1];
     command.undo();
-
     return {
       undoStack: undoStack.slice(0, -1),
       redoStack: [...redoStack, command],
@@ -225,10 +210,8 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   redo: () => set((state) => {
     const { undoStack, redoStack } = state;
     if (redoStack.length === 0) return {};
-
     const command = redoStack[redoStack.length - 1];
     command.execute();
-
     return {
       undoStack: [...undoStack, command],
       redoStack: redoStack.slice(0, -1),
@@ -244,67 +227,40 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   })),
 
   endStroke: () => set((state) => {
-    const { currentStroke, currentShapeStart, currentTool, currentColor, currentSize, incrementLamportClock } = state;
-    const clock = incrementLamportClock();
+    const { currentStroke, currentTool, currentColor, currentSize } = state;
+    const clock = get().incrementLamportClock();
 
-    if (currentTool === 'brush' || currentTool === 'eraser') {
-      if (currentStroke.length === 0) return {};
-
+    if ((currentTool === 'brush' || currentTool === 'eraser') && currentStroke.length > 0) {
       const stroke: Stroke = {
         type: 'stroke',
         points: [...currentStroke],
-        color: currentTool === 'eraser' ? '#FFFFFF' : currentColor,
+        color: currentTool === 'eraser' ? 'eraser' : currentColor,
         size: currentSize,
         lamportClock: clock,
       };
-
-      return {
-        strokes: [...state.strokes, stroke],
-        currentStroke: [],
-      };
-    } else if (currentShapeStart) {
-      // Shape tools
-      const lastPoint = currentStroke[currentStroke.length - 1] || currentShapeStart;
-      const shape: Shape = {
-        type: currentTool,
-        startX: currentShapeStart.x,
-        startY: currentShapeStart.y,
-        endX: lastPoint.x,
-        endY: lastPoint.y,
-        color: currentColor,
-        size: currentSize,
-        lamportClock: clock,
-      };
-
-      return {
-        strokes: [...state.strokes, shape],
-        currentStroke: [],
-        currentShapeStart: null,
-      };
+      return { strokes: [...state.strokes, stroke], currentStroke: [] };
     }
 
     return { currentStroke: [], currentShapeStart: null };
   }),
 
+  // FIX: separate action to add a locally-drawn shape
+  addShape: (shape) => set((state) => ({
+    strokes: [...state.strokes, shape],
+  })),
+
   addRemoteStroke: (stroke) => set((state) => {
-    // Update Lamport clock on remote event
-    if (stroke.lamportClock) {
-      get().updateLamportClock(stroke.lamportClock);
-    }
+    if (stroke.lamportClock) get().updateLamportClock(stroke.lamportClock);
     return { strokes: [...state.strokes, stroke] };
   }),
 
   addRemoteShape: (shape) => set((state) => {
-    if (shape.lamportClock) {
-      get().updateLamportClock(shape.lamportClock);
-    }
+    if (shape.lamportClock) get().updateLamportClock(shape.lamportClock);
     return { strokes: [...state.strokes, shape] };
   }),
 
   addRemoteText: (text) => set((state) => {
-    if (text.lamportClock) {
-      get().updateLamportClock(text.lamportClock);
-    }
+    if (text.lamportClock) get().updateLamportClock(text.lamportClock);
     return { strokes: [...state.strokes, text] };
   }),
 
@@ -314,28 +270,22 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     return { notes: [...state.notes, newNote] };
   }),
 
-  updateNote: (noteId, content, oldContent) => set((state) => {
-    return {
-      notes: state.notes.map((n) => (n.noteId === noteId ? { ...n, content } : n)),
-    };
-  }),
+  updateNote: (noteId, content) => set((state) => ({
+    notes: state.notes.map((n) => n.noteId === noteId ? { ...n, content } : n),
+  })),
 
-  moveNote: (noteId, x, y, oldX, oldY) => set((state) => {
-    return {
-      notes: state.notes.map((n) => (n.noteId === noteId ? { ...n, x, y } : n)),
-    };
-  }),
+  moveNote: (noteId, x, y) => set((state) => ({
+    notes: state.notes.map((n) => n.noteId === noteId ? { ...n, x, y } : n),
+  })),
 
-  deleteNote: (noteId, note) => set((state) => {
-    return {
-      notes: state.notes.filter((n) => n.noteId !== noteId),
-    };
-  }),
+  deleteNote: (noteId) => set((state) => ({
+    notes: state.notes.filter((n) => n.noteId !== noteId),
+  })),
 
   addRemoteNote: (note) => set((state) => {
-    if (note.lamportClock) {
-      get().updateLamportClock(note.lamportClock);
-    }
+    if (note.lamportClock) get().updateLamportClock(note.lamportClock);
+    const exists = state.notes.some((n) => n.noteId === note.noteId);
+    if (exists) return {};
     return { notes: [...state.notes, note] };
   }),
 
@@ -343,6 +293,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     const clock = get().incrementLamportClock();
     const newText: Text = {
       textId: text.textId || crypto.randomUUID(),
+      type: 'text',
       x: text.x,
       y: text.y,
       content: text.content,
@@ -350,40 +301,27 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       fontSize: text.fontSize,
       lamportClock: clock,
     };
-
-    return {
-      strokes: [...state.strokes, newText],
-    };
+    return { strokes: [...state.strokes, newText] };
   }),
 
   addRemoteTextObject: (text) => set((state) => {
-    if (text.lamportClock) {
-      get().updateLamportClock(text.lamportClock);
-    }
+    if (text.lamportClock) get().updateLamportClock(text.lamportClock);
     return { strokes: [...state.strokes, text] };
   }),
 
-  deleteText: (textId, text) => set((state) => ({
+  deleteText: (textId) => set((state) => ({
     strokes: state.strokes.filter((s) => s.type !== 'text' || (s as Text).textId !== textId),
   })),
 
   clearCanvas: () => set({ strokes: [], notes: [], undoStack: [], redoStack: [] }),
 
-  loadRoomState: (strokes, notes) => set((state) => {
-    // Update Lamport clock to max of all events
+  loadRoomState: (strokes, notes) => set(() => {
     let maxClock = 0;
     [...strokes, ...notes].forEach((item) => {
       const clock = 'lamportClock' in item && item.lamportClock ? item.lamportClock : 0;
       maxClock = Math.max(maxClock, clock);
     });
-
-    return {
-      strokes,
-      notes,
-      lamportClock: maxClock,
-      undoStack: [], // Clear undo stack on state load
-      redoStack: [],
-    };
+    return { strokes, notes, lamportClock: maxClock, undoStack: [], redoStack: [] };
   }),
 
   updateRemoteCursor: (cursor) => set((state) => {
@@ -400,19 +338,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   cleanupOldCursors: () => set((state) => {
     const now = Date.now();
-    const timeout = 5000; // 5 seconds
+    const timeout = 5000;
     const newCursors = new Map<string, RemoteCursor>();
-
-    for (const [userId, cursor] of state.remoteCursors) {
-      if (now - cursor.lastSeen < timeout) {
-        newCursors.set(userId, cursor);
-      }
+    for (const [uid, cursor] of state.remoteCursors) {
+      if (now - cursor.lastSeen < timeout) newCursors.set(uid, cursor);
     }
-
     return { remoteCursors: newCursors };
   }),
 
   setCurrentShapeStart: (point) => set({ currentShapeStart: point }),
 }));
-
-// export { COLORS, NOTE_COLORS };

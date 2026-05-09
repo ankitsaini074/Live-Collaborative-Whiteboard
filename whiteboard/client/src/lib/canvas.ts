@@ -352,7 +352,7 @@ export const exportToPNG = (
   // Draw all strokes
   strokes.forEach((item) => {
     if (item.type === 'stroke') {
-      if (item.color === '#FFFFFF') {
+      if (item.color === 'eraser' || item.color === '#FFFFFF') {
         drawEraserStroke(ctx, item.points, item.size);
       } else {
         drawSmoothStroke(ctx, item.points, item.color, item.size);

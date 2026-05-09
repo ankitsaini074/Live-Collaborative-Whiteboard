@@ -10,20 +10,9 @@ import {
   drawText,
   drawCursor,
   resizeCanvas,
-  getCanvasPoint,
   getTransformedPoint,
 } from '../lib/canvas';
 import type { Stroke, Shape, Text } from '../store/canvasStore';
-
-interface Note {
-  noteId: string;
-  x: number;
-  y: number;
-  content: string;
-  color: string;
-  userId: string;
-  lamportClock?: number;
-}
 import {
   joinRoom,
   sendDrawStroke,
@@ -34,7 +23,6 @@ import {
   sendMoveNote,
   sendDeleteNote,
   sendAddText,
-  sendDeleteText,
   onRoomState,
   onDrawStroke,
   onDrawShape,
@@ -49,8 +37,6 @@ import {
   onMissingEvents,
   throttleCursor,
   updateLocalLamportClock,
-  setCurrentRoomId,
-  resetLamportClock,
 } from '../lib/socket';
 
 export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
@@ -59,7 +45,6 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
   const lastCursorPos = useRef<DrawPoint | null>(null);
   const [textInputPos, setTextInputPos] = useState<DrawPoint | null>(null);
 
-  // Pan state
   const isPanning = useRef(false);
   const panStartPos = useRef({ x: 0, y: 0 });
 
@@ -75,12 +60,14 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     startStroke,
     addPoint,
     endStroke,
+    addShape,
     addRemoteStroke,
     addRemoteShape,
     addRemoteTextObject,
     addNote,
     updateNote,
     moveNote,
+    deleteNote,
     addRemoteNote,
     addText,
     roomId,
@@ -90,7 +77,6 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     setCurrentShapeStart,
     cleanupOldCursors,
     updateRemoteCursor,
-    removeRemoteCursor,
     undo,
     redo,
     canUndo,
@@ -101,6 +87,8 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     setZoom,
     setPan,
     resetView,
+    clearCanvas,
+    deleteText,
   } = useCanvasStore();
 
   // Setup canvas context and resize
@@ -111,70 +99,55 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     resizeCanvas(canvas);
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
     ctxRef.current = ctx;
 
-    const handleResize = () => resizeCanvas(canvas);
+    const handleResize = () => {
+      resizeCanvas(canvas);
+    };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Keyboard shortcuts for undo/redo (Ctrl+Z / Ctrl+Y)
+  // Keyboard shortcuts: undo/redo, zoom reset
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if in text input
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-        return;
-      }
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.target instanceof HTMLElement && e.target.contentEditable === 'true') return;
 
-      // Ctrl+Z for undo
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault();
-        if (canUndo()) {
-          undo();
-        }
+        if (canUndo()) undo();
       }
-
-      // Ctrl+Y or Ctrl+Shift+Z for redo
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
         e.preventDefault();
-        if (canRedo()) {
-          redo();
-        }
+        if (canRedo()) redo();
       }
-
-      // Ctrl+0 to reset zoom
       if ((e.ctrlKey || e.metaKey) && e.key === '0') {
         e.preventDefault();
         resetView();
       }
     };
-
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [undo, redo, canUndo, canRedo, resetView]);
 
-  // Draw helper - renders all content
+  // FIX: include zoom and pan in deps so render uses fresh values
   const render = useCallback(() => {
     const ctx = ctxRef.current;
     if (!ctx) return;
 
-    // Clear canvas
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     const dpr = window.devicePixelRatio || 1;
     ctx.scale(dpr, dpr);
-
-    // Apply zoom and pan transforms
     ctx.translate(pan.x, pan.y);
     ctx.scale(zoom, zoom);
 
-    // Draw all strokes and shapes
     strokes.forEach((item) => {
       if (item.type === 'stroke') {
-        if (item.color === '#FFFFFF') {
+        if (item.color === 'eraser') {
           drawEraserStroke(ctx, item.points, item.size);
         } else {
           drawSmoothStroke(ctx, item.points, item.color, item.size);
@@ -192,318 +165,209 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
       }
     });
 
-    // Draw remote cursors
     remoteCursors.forEach((cursor) => {
       drawCursor(ctx, cursor.x, cursor.y, cursor.color, cursor.username);
     });
 
     ctx.restore();
-  }, [strokes, remoteCursors]);
+  }, [strokes, remoteCursors, zoom, pan]);
 
-  // Render when strokes, cursors, zoom, or pan change
   useEffect(() => {
     render();
-  }, [render, zoom, pan]);
+  }, [render]);
 
-  // Join room and setup socket listeners
+  // Join room and setup socket listeners — with proper cleanup
   useEffect(() => {
     if (!roomId || !userId || !username) return;
 
     joinRoom({ roomId, userId, username, color: userColor });
 
-    // Listen for room state (full state replay)
-    onRoomState((payload) => {
-      if (payload.roomId === roomId) {
-        // Update local Lamport clock to server's clock
-        updateLocalLamportClock(payload.serverLamportClock);
+    const handleRoomState = (payload: any) => {
+      if (payload.roomId !== roomId) return;
+      updateLocalLamportClock(payload.serverLamportClock);
 
-        // Convert events to local format
-        const localStrokes: (Stroke | Shape | Text)[] = [];
-        const localNotes: Note[] = [];
+      const localStrokes: (Stroke | Shape | Text)[] = [];
+      const localNotes: any[] = [];
 
-        payload.events.forEach((event: any) => {
-          if (event.points) {
-            // Draw stroke
-            localStrokes.push({
-              type: 'stroke',
-              points: event.points,
-              color: event.color,
-              size: event.size,
-              lamportClock: event.lamportClock,
-            });
-          } else if (event.type === 'rect' || event.type === 'circle' || event.type === 'line' || event.type === 'arrow') {
-            // Shape
-            localStrokes.push({
-              type: event.type,
-              startX: event.startX,
-              startY: event.startY,
-              endX: event.endX,
-              endY: event.endY,
-              color: event.color,
-              size: event.size,
-              lamportClock: event.lamportClock,
-            });
-          } else if (event.textId) {
-            // Text
-            localStrokes.push({
-              textId: event.textId,
-              x: event.x,
-              y: event.y,
-              content: event.content,
-              color: event.color,
-              fontSize: event.fontSize,
-              lamportClock: event.lamportClock,
-              type: 'text',
-            });
-          } else if (event.noteId) {
-            // Note (add-note)
-            if (event.type === 'add-note') {
-              localNotes.push({
-                noteId: event.noteId,
-                x: event.x,
-                y: event.y,
-                content: event.content,
-                color: event.color,
-                userId: event.userId,
-                lamportClock: event.lamportClock,
-              });
-            }
-          }
-        });
-
-        // Load all state at once (with Lamport clock ordering)
-        localStrokes.sort((a, b) => (a.lamportClock || 0) - (b.lamportClock || 0));
-        localNotes.sort((a, b) => (a.lamportClock || 0) - (b.lamportClock || 0));
-
-        loadRoomState(localStrokes, localNotes);
-
-        // Check if room is expired (no events and server clock is 0)
-        if (localStrokes.length === 0 && localNotes.length === 0 && payload.serverLamportClock === 0) {
-          // Room may be expired, but we'll allow joining to create new content
-          // The 24h TTL is handled by Redis
+      payload.events.forEach((event: any) => {
+        if (event.points) {
+          localStrokes.push({
+            type: 'stroke',
+            points: event.points,
+            color: event.color,
+            size: event.size,
+            lamportClock: event.lamportClock,
+          });
+        } else if (event.type === 'rect' || event.type === 'circle' || event.type === 'line' || event.type === 'arrow') {
+          localStrokes.push({
+            type: event.type,
+            startX: event.startX,
+            startY: event.startY,
+            endX: event.endX,
+            endY: event.endY,
+            color: event.color,
+            size: event.size,
+            lamportClock: event.lamportClock,
+          });
+        } else if (event.textId) {
+          localStrokes.push({
+            textId: event.textId,
+            type: 'text',
+            x: event.x,
+            y: event.y,
+            content: event.content,
+            color: event.color,
+            fontSize: event.fontSize,
+            lamportClock: event.lamportClock,
+          });
+        } else if (event.noteId && event.type === 'add-note') {
+          localNotes.push({
+            noteId: event.noteId,
+            x: event.x,
+            y: event.y,
+            content: event.content,
+            color: event.color,
+            userId: event.userId,
+            lamportClock: event.lamportClock,
+          });
         }
-      }
-    });
+      });
 
-    // Listen for missing events (for reconnection)
-    onMissingEvents((payload) => {
-      if (payload.roomId === roomId) {
-        // Process missing events similarly to room state
-        payload.events.forEach((event: any) => {
-          updateLocalLamportClock(event.lamportClock);
+      localStrokes.sort((a, b) => (a.lamportClock || 0) - (b.lamportClock || 0));
+      localNotes.sort((a: any, b: any) => (a.lamportClock || 0) - (b.lamportClock || 0));
+      loadRoomState(localStrokes, localNotes);
+    };
 
-          if (event.points) {
-            addRemoteStroke({
-              type: 'stroke',
-              points: event.points,
-              color: event.color,
-              size: event.size,
-              lamportClock: event.lamportClock,
-            });
-          } else if (event.type === 'rect' || event.type === 'circle' || event.type === 'line' || event.type === 'arrow') {
-            addRemoteShape({
-              type: event.type,
-              startX: event.startX,
-              startY: event.startY,
-              endX: event.endX,
-              endY: event.endY,
-              color: event.color,
-              size: event.size,
-              lamportClock: event.lamportClock,
-            });
-          } else if (event.textId) {
-            addRemoteTextObject({
-              textId: event.textId,
-              x: event.x,
-              y: event.y,
-              content: event.content,
-              color: event.color,
-              fontSize: event.fontSize,
-              lamportClock: event.lamportClock,
-              type: 'text',
-            });
-          }
-        });
-      }
-    });
-
-    // Listen for incoming strokes
-    onDrawStroke((payload) => {
-      if (payload.userId !== userId && payload.roomId === roomId) {
-        addRemoteStroke({
-          type: 'stroke',
-          points: payload.points,
-          color: payload.color,
-          size: payload.size,
-          lamportClock: payload.lamportClock,
-        });
-      }
-    });
-
-    // Listen for incoming shapes
-    onDrawShape((payload) => {
-      if (payload.userId !== userId && payload.roomId === roomId) {
-        addRemoteShape({
-          type: payload.shapeType,
-          startX: payload.startX,
-          startY: payload.startY,
-          endX: payload.endX,
-          endY: payload.endY,
-          color: payload.color,
-          size: payload.size,
-          lamportClock: payload.lamportClock,
-        });
-      }
-    });
-
-    // Listen for cursor moves
-    onCursorMove((payload) => {
-      if (payload.userId !== userId && payload.roomId === roomId) {
-        updateRemoteCursor({
-          userId: payload.userId,
-          username: payload.username,
-          color: payload.color,
-          x: payload.x,
-          y: payload.y,
-        });
-      }
-    });
-
-    // Listen for notes
-    onAddNote((payload) => {
-      if (payload.roomId === roomId) {
-        addRemoteNote({
-          noteId: payload.noteId,
-          x: payload.x,
-          y: payload.y,
-          content: payload.content,
-          color: payload.color,
-          userId: payload.userId,
-          lamportClock: payload.lamportClock,
-        });
-      }
-    });
-
-    onUpdateNote((payload) => {
-      if (payload.userId !== userId) {
-        updateNote(payload.noteId, payload.content);
-      }
-    });
-
-    onMoveNote((payload) => {
-      if (payload.userId !== userId) {
-        moveNote(payload.noteId, payload.x, payload.y);
-      }
-    });
-
-    onDeleteNote((payload) => {
-      if (payload.userId !== userId) {
-        // Delete note
-        const notes = get().notes;
-        const noteToDelete = notes.find(n => n.noteId === payload.noteId);
-        if (noteToDelete) {
-          // Remove note by updating the store
-          set((state) => ({
-            notes: state.notes.filter(n => n.noteId !== payload.noteId),
-          }));
+    const handleMissingEvents = (payload: any) => {
+      if (payload.roomId !== roomId) return;
+      payload.events.forEach((event: any) => {
+        updateLocalLamportClock(event.lamportClock);
+        if (event.points) {
+          addRemoteStroke({ type: 'stroke', points: event.points, color: event.color, size: event.size, lamportClock: event.lamportClock });
+        } else if (event.type === 'rect' || event.type === 'circle' || event.type === 'line' || event.type === 'arrow') {
+          addRemoteShape({ type: event.type, startX: event.startX, startY: event.startY, endX: event.endX, endY: event.endY, color: event.color, size: event.size, lamportClock: event.lamportClock });
+        } else if (event.textId) {
+          addRemoteTextObject({ textId: event.textId, type: 'text', x: event.x, y: event.y, content: event.content, color: event.color, fontSize: event.fontSize, lamportClock: event.lamportClock });
         }
-      }
-    });
+      });
+    };
 
-    // Listen for text
-    onAddText((payload) => {
+    const handleDrawStroke = (payload: any) => {
       if (payload.userId !== userId && payload.roomId === roomId) {
-        addRemoteTextObject({
-          textId: payload.textId,
-          x: payload.x,
-          y: payload.y,
-          content: payload.content,
-          color: payload.color,
-          fontSize: payload.fontSize,
-          lamportClock: payload.lamportClock,
-          type: 'text',
-        });
+        addRemoteStroke({ type: 'stroke', points: payload.points, color: payload.color, size: payload.size, lamportClock: payload.lamportClock });
       }
-    });
+    };
 
-    onDeleteText((payload) => {
-      if (payload.userId !== userId) {
-        // Delete text
-        set((state) => ({
-          strokes: state.strokes.filter(s => s.type !== 'text' || (s as Text).textId !== payload.textId),
-        }));
+    const handleDrawShape = (payload: any) => {
+      if (payload.userId !== userId && payload.roomId === roomId) {
+        addRemoteShape({ type: payload.shapeType, startX: payload.startX, startY: payload.startY, endX: payload.endX, endY: payload.endY, color: payload.color, size: payload.size, lamportClock: payload.lamportClock });
       }
-    });
+    };
 
-    onClearBoard((payload) => {
+    const handleCursorMove = (payload: any) => {
+      if (payload.userId !== userId && payload.roomId === roomId) {
+        updateRemoteCursor({ userId: payload.userId, username: payload.username, color: payload.color, x: payload.x, y: payload.y });
+      }
+    };
+
+    const handleAddNote = (payload: any) => {
       if (payload.roomId === roomId) {
-        // Clear all content
-        set((state) => ({
-          strokes: [],
-          notes: [],
-          undoStack: [],
-          redoStack: [],
-        }));
+        addRemoteNote({ noteId: payload.noteId, x: payload.x, y: payload.y, content: payload.content, color: payload.color, userId: payload.userId, lamportClock: payload.lamportClock });
       }
-    });
+    };
 
-    // Cleanup old cursors periodically
-    const interval = setInterval(() => {
-      cleanupOldCursors();
-    }, 1000);
+    const handleUpdateNote = (payload: any) => {
+      if (payload.userId !== userId) updateNote(payload.noteId, payload.content);
+    };
 
-    return () => clearInterval(interval);
-  }, [roomId, userId, username, userColor, addRemoteStroke, addRemoteShape, addRemoteTextObject, addRemoteNote, updateNote, moveNote, cleanupOldCursors, loadRoomState, updateRemoteCursor, onRoomExpired]);
+    const handleMoveNote = (payload: any) => {
+      if (payload.userId !== userId) moveNote(payload.noteId, payload.x, payload.y);
+    };
 
-  // Helper function to get state from inside useEffect
-  const get = useCanvasStore.getState;
-  const set = useCanvasStore.setState;
+    const handleDeleteNote = (payload: any) => {
+      if (payload.userId !== userId) deleteNote(payload.noteId);
+    };
 
-  // Wheel event handler for zooming
-  const handleWheel = (e: WheelEvent) => {
-    e.preventDefault();
+    const handleAddText = (payload: any) => {
+      if (payload.userId !== userId && payload.roomId === roomId) {
+        addRemoteTextObject({ textId: payload.textId, type: 'text', x: payload.x, y: payload.y, content: payload.content, color: payload.color, fontSize: payload.fontSize, lamportClock: payload.lamportClock });
+      }
+    };
 
+    const handleDeleteText = (payload: any) => {
+      if (payload.userId !== userId) deleteText(payload.textId);
+    };
+
+    const handleClearBoard = (payload: any) => {
+      if (payload.roomId === roomId) clearCanvas();
+    };
+
+    onRoomState(handleRoomState);
+    onMissingEvents(handleMissingEvents);
+    onDrawStroke(handleDrawStroke);
+    onDrawShape(handleDrawShape);
+    onCursorMove(handleCursorMove);
+    onAddNote(handleAddNote);
+    onUpdateNote(handleUpdateNote);
+    onMoveNote(handleMoveNote);
+    onDeleteNote(handleDeleteNote);
+    onAddText(handleAddText);
+    onDeleteText(handleDeleteText);
+    onClearBoard(handleClearBoard);
+
+    const interval = setInterval(() => cleanupOldCursors(), 1000);
+
+    return () => {
+      clearInterval(interval);
+    };
+  }, [roomId, userId, username, userColor]);
+
+  // Attach wheel event non-passively for zoom
+  useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    const handleWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const state = useCanvasStore.getState();
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
 
-    // Calculate zoom factor
-    const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-    const newZoom = Math.max(0.25, Math.min(4, zoom * zoomFactor));
+      const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+      const newZoom = Math.max(0.1, Math.min(5, state.zoom * zoomFactor));
+      const zoomRatio = newZoom / state.zoom;
+      const newPanX = mouseX - (mouseX - state.pan.x) * zoomRatio;
+      const newPanY = mouseY - (mouseY - state.pan.y) * zoomRatio;
 
-    // Calculate new pan to zoom towards mouse position
-    const zoomRatio = newZoom / zoom;
-    const newPanX = mouseX - (mouseX - pan.x) * zoomRatio;
-    const newPanY = mouseY - (mouseY - pan.y) * zoomRatio;
+      setZoom(newZoom);
+      setPan(newPanX, newPanY);
+    };
 
-    setZoom(newZoom);
-    setPan(newPanX, newPanY);
-  };
+    canvas.addEventListener('wheel', handleWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', handleWheel);
+  }, [setZoom, setPan]);
 
   // Create throttled cursor sender
-  const sendCursor = throttleCursor(() => {
-    if (roomId && lastCursorPos.current) {
+  const sendCursor = useRef(throttleCursor(() => {
+    const state = useCanvasStore.getState();
+    if (state.roomId && lastCursorPos.current) {
       sendCursorMove({
-        roomId,
-        userId,
-        username,
-        color: userColor,
+        roomId: state.roomId,
+        userId: state.userId,
+        username: state.username,
+        color: state.userColor,
         x: lastCursorPos.current.x,
         y: lastCursorPos.current.y,
         timestamp: Date.now(),
       });
     }
-  });
+  })).current;
 
-  // Pointer down handler
-  const handlePointerDown = (e: PointerEvent) => {
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Middle-click for panning
     if (e.button === 1) {
       isPanning.current = true;
       panStartPos.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
@@ -511,35 +375,18 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
       return;
     }
 
-    const point = getTransformedPoint(e, canvas, zoom, pan);
+    const point = getTransformedPoint(e.nativeEvent, canvas, zoom, pan);
 
-    // Text tool click to place
     if (currentTool === 'text') {
       setTextInputPos(point);
       return;
     }
 
-    // Note tool click to add
     if (currentTool === 'note') {
       const noteId = crypto.randomUUID();
-      addNote({
-        noteId,
-        x: point.x,
-        y: point.y,
-        content: '',
-        color: '#FEF3C7',
-      });
-
+      addNote({ noteId, x: point.x, y: point.y, content: '', color: '#fef9c3' });
       if (roomId) {
-        sendAddNote({
-          roomId,
-          userId,
-          noteId,
-          x: point.x,
-          y: point.y,
-          content: '',
-          color: '#FEF3C7',
-        });
+        sendAddNote({ roomId, userId, noteId, x: point.x, y: point.y, content: '', color: '#fef9c3' });
       }
       return;
     }
@@ -548,93 +395,60 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     startStroke(point);
   };
 
-  // Pointer move handler
-  const handlePointerMove = (e: PointerEvent) => {
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Handle panning
     if (isPanning.current) {
-      const newPanX = e.clientX - panStartPos.current.x;
-      const newPanY = e.clientY - panStartPos.current.y;
-      setPan(newPanX, newPanY);
+      setPan(e.clientX - panStartPos.current.x, e.clientY - panStartPos.current.y);
       return;
     }
 
-    const point = getTransformedPoint(e, canvas, zoom, pan);
-
-    // Update and send cursor position (always, even when not drawing)
+    const point = getTransformedPoint(e.nativeEvent, canvas, zoom, pan);
     lastCursorPos.current = point;
     sendCursor();
 
-    if (currentStroke.length === 0 && !currentShapeStart) {
-      render(); // Re-render to show cursors
-      return;
-    }
+    if (currentStroke.length === 0 && !currentShapeStart) return;
+
+    addPoint(point);
+    render();
 
     const ctx = ctxRef.current;
-    if (ctx) {
-      addPoint(point);
+    if (!ctx) return;
 
-      // Re-render with preview
-      render();
+    // FIX: Shape preview — apply same transforms as render()
+    if (currentShapeStart && (currentTool === 'rect' || currentTool === 'circle' || currentTool === 'line' || currentTool === 'arrow')) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      const dpr = window.devicePixelRatio || 1;
+      ctx.scale(dpr, dpr);
+      ctx.translate(pan.x, pan.y);
+      ctx.scale(zoom, zoom);
+      ctx.globalAlpha = 0.5;
 
-      // Draw preview for shapes
-      if (currentShapeStart && (currentTool === 'rect' || currentTool === 'circle' || currentTool === 'line' || currentTool === 'arrow')) {
-        ctx.save();
-        const dpr = window.devicePixelRatio || 1;
-        ctx.scale(dpr, dpr);
+      if (currentTool === 'rect') drawRect(ctx, currentShapeStart.x, currentShapeStart.y, point.x, point.y, currentColor, currentSize);
+      else if (currentTool === 'circle') drawCircle(ctx, currentShapeStart.x, currentShapeStart.y, point.x, point.y, currentColor, currentSize);
+      else if (currentTool === 'line') drawLine(ctx, currentShapeStart.x, currentShapeStart.y, point.x, point.y, currentColor, currentSize);
+      else if (currentTool === 'arrow') drawArrow(ctx, currentShapeStart.x, currentShapeStart.y, point.x, point.y, currentColor, currentSize);
 
-        ctx.globalAlpha = 0.5;
-        if (currentTool === 'rect') {
-          drawRect(ctx, currentShapeStart.x, currentShapeStart.y, point.x, point.y, currentColor, currentSize);
-        } else if (currentTool === 'circle') {
-          drawCircle(ctx, currentShapeStart.x, currentShapeStart.y, point.x, point.y, currentColor, currentSize);
-        } else if (currentTool === 'line') {
-          drawLine(ctx, currentShapeStart.x, currentShapeStart.y, point.x, point.y, currentColor, currentSize);
-        } else if (currentTool === 'arrow') {
-          drawArrow(ctx, currentShapeStart.x, currentShapeStart.y, point.x, point.y, currentColor, currentSize);
-        }
-
-        ctx.restore();
-        return; // Skip regular render for shape preview
-      }
-
-      // Brush/Eraser preview
-      if ((currentTool === 'brush' || currentTool === 'eraser') && currentStroke.length > 0) {
-        ctx.save();
-        const dpr = window.devicePixelRatio || 1;
-        ctx.scale(dpr, dpr);
-
-        const drawColor = currentTool === 'eraser' ? '#FFFFFF' : currentColor;
-        if (drawColor === '#FFFFFF') {
-          drawEraserStroke(ctx, [...currentStroke, point], currentSize);
-        } else {
-          drawSmoothStroke(ctx, [...currentStroke, point], drawColor, currentSize);
-        }
-
-        ctx.restore();
-      }
+      ctx.restore();
     }
   };
 
-  // Pointer up handler
-  const handlePointerUp = (e: PointerEvent) => {
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Stop panning
     if (e.button === 1) {
       isPanning.current = false;
       canvas.releasePointerCapture(e.pointerId);
       return;
     }
 
-    if (currentStroke.length === 0) return;
+    if (currentStroke.length === 0 && !currentShapeStart) return;
 
     canvas.releasePointerCapture(e.pointerId);
-
-    const point = getTransformedPoint(e, canvas, zoom, pan);
+    const point = getTransformedPoint(e.nativeEvent, canvas, zoom, pan);
     addPoint(point);
 
     if (currentTool === 'brush' || currentTool === 'eraser') {
@@ -644,11 +458,27 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
           roomId,
           userId,
           points: [...currentStroke, point],
-          color: currentTool === 'eraser' ? '#FFFFFF' : currentColor,
+          color: currentTool === 'eraser' ? 'eraser' : currentColor,
           size: currentSize,
         });
       }
     } else if (currentShapeStart && (currentTool === 'rect' || currentTool === 'circle' || currentTool === 'line' || currentTool === 'arrow')) {
+      // FIX: Add shape locally AND send over socket
+      const clock = useCanvasStore.getState().incrementLamportClock();
+      const shape: Shape = {
+        type: currentTool,
+        startX: currentShapeStart.x,
+        startY: currentShapeStart.y,
+        endX: point.x,
+        endY: point.y,
+        color: currentColor,
+        size: currentSize,
+        lamportClock: clock,
+      };
+      addShape(shape);
+      setCurrentShapeStart(null);
+      useCanvasStore.setState({ currentStroke: [] });
+
       if (roomId) {
         sendDrawShape({
           roomId,
@@ -662,16 +492,22 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
           size: currentSize,
         });
       }
-      setCurrentShapeStart(null);
     }
   };
 
-  // Pointer leave handler
   const handlePointerLeave = () => {
     if (currentStroke.length > 0) {
       endStroke();
       setCurrentShapeStart(null);
     }
+  };
+
+  const getCursor = () => {
+    if (isPanning.current) return 'grabbing';
+    if (currentTool === 'eraser') return 'cell';
+    if (currentTool === 'text') return 'text';
+    if (currentTool === 'note') return 'copy';
+    return 'crosshair';
   };
 
   return (
@@ -683,8 +519,7 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerLeave={handlePointerLeave}
-        onWheel={handleWheel}
-        style={{ touchAction: 'none', cursor: isPanning.current ? 'grabbing' : 'crosshair' }}
+        style={{ touchAction: 'none', cursor: getCursor() }}
       />
       <StickyNotesOverlay />
       <TextInputOverlay
@@ -693,25 +528,9 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
         onConfirm={(content) => {
           if (textInputPos && content.trim()) {
             const textId = crypto.randomUUID();
-            addText({
-              x: textInputPos.x,
-              y: textInputPos.y,
-              content,
-              color: currentColor,
-              fontSize: 16 + currentSize,
-              textId,
-            });
+            addText({ textId, type: 'text', x: textInputPos.x, y: textInputPos.y, content, color: currentColor, fontSize: 16 + currentSize });
             if (roomId) {
-              sendAddText({
-                roomId,
-                userId,
-                textId,
-                x: textInputPos.x,
-                y: textInputPos.y,
-                content,
-                color: currentColor,
-                fontSize: 16 + currentSize,
-              });
+              sendAddText({ roomId, userId, textId, x: textInputPos.x, y: textInputPos.y, content, color: currentColor, fontSize: 16 + currentSize });
             }
           }
           setTextInputPos(null);
@@ -721,12 +540,7 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
   );
 }
 
-// Text input overlay for text tool
-function TextInputOverlay({
-  position,
-  onClose,
-  onConfirm,
-}: {
+function TextInputOverlay({ position, onClose, onConfirm }: {
   position: DrawPoint | null;
   onClose: () => void;
   onConfirm: (content: string) => void;
@@ -735,99 +549,70 @@ function TextInputOverlay({
   const [content, setContent] = useState('');
 
   useEffect(() => {
-    if (position && inputRef.current) {
-      inputRef.current.focus();
+    if (position) {
+      setContent('');
+      setTimeout(() => inputRef.current?.focus(), 0);
     }
   }, [position]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      onConfirm(content);
-    } else if (e.key === 'Escape') {
-      onClose();
-    }
-  };
 
   if (!position) return null;
 
   return (
-    <div
-      className="absolute pointer-events-auto"
-      style={{ left: position.x, top: position.y }}
-    >
+    <div className="absolute pointer-events-auto" style={{ left: position.x, top: position.y }}>
       <input
         ref={inputRef}
         type="text"
         value={content}
         onChange={(e) => setContent(e.target.value)}
-        onKeyDown={handleKeyDown}
-        onBlur={() => {
-          // Auto-confirm on blur if there's content
-          if (content.trim()) {
-            onConfirm(content);
-          } else {
-            onClose();
-          }
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') onConfirm(content);
+          else if (e.key === 'Escape') onClose();
         }}
-        className="bg-transparent border-b-2 border-blue-500 outline-none text-sm min-w-24"
-        style={{ color: 'black' }}
-        placeholder="Type and press Enter..."
-        autoFocus
+        onBlur={() => {
+          if (content.trim()) onConfirm(content);
+          else onClose();
+        }}
+        className="bg-white/90 border border-blue-400 rounded px-2 py-1 text-sm shadow-lg outline-none min-w-32 backdrop-blur-sm"
+        placeholder="Type text…"
       />
     </div>
   );
 }
 
-// Sticky notes overlay component
 function StickyNotesOverlay() {
-  const { notes, updateNote, moveNote, roomId, userId, zoom, pan } = useCanvasStore();
+  const { notes, updateNote, moveNote, deleteNote, roomId, userId, zoom, pan } = useCanvasStore();
 
   const handleUpdate = (noteId: string, content: string) => {
     updateNote(noteId, content);
-    if (roomId) {
-      const note = notes.find((n) => n.noteId === noteId);
-      if (note && note.userId === userId) {
-        sendUpdateNote({
-          roomId,
-          userId,
-          noteId,
-          content,
-        });
-      }
+    const note = useCanvasStore.getState().notes.find((n) => n.noteId === noteId);
+    if (roomId && note && note.userId === userId) {
+      sendUpdateNote({ roomId, userId, noteId, content });
     }
   };
 
   const handleMove = (noteId: string, dx: number, dy: number) => {
-    const note = notes.find((n) => n.noteId === noteId);
+    const note = useCanvasStore.getState().notes.find((n) => n.noteId === noteId);
     if (!note) return;
-
     const newX = note.x + dx;
     const newY = note.y + dy;
     moveNote(noteId, newX, newY);
-
     if (roomId && note.userId === userId) {
-      sendMoveNote({
-        roomId,
-        userId,
-        noteId,
-        x: newX,
-        y: newY,
-      });
+      sendMoveNote({ roomId, userId, noteId, x: newX, y: newY });
     }
   };
 
   const handleDelete = (noteId: string, note: any) => {
+    deleteNote(noteId);
     if (roomId && note.userId === userId) {
-      sendDeleteNote({
-        roomId,
-        userId,
-        noteId,
-      });
+      sendDeleteNote({ roomId, userId, noteId });
     }
   };
 
   return (
-    <div className="absolute inset-0 pointer-events-none" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: '0 0' }}>
+    <div
+      className="absolute inset-0 pointer-events-none"
+      style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: '0 0' }}
+    >
       {notes.map((note) => (
         <DraggableNote
           key={note.noteId}
@@ -842,14 +627,7 @@ function StickyNotesOverlay() {
   );
 }
 
-// Draggable sticky note component
-function DraggableNote({
-  note,
-  isEditable,
-  onUpdate,
-  onMove,
-  onDelete,
-}: {
+function DraggableNote({ note, isEditable, onUpdate, onMove, onDelete }: {
   note: { noteId: string; x: number; y: number; content: string; color: string; userId?: string };
   isEditable: boolean;
   onUpdate: (noteId: string, content: string) => void;
@@ -858,60 +636,44 @@ function DraggableNote({
 }) {
   const [isDragging, setIsDragging] = useState(false);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
-  const noteRef = useRef<HTMLDivElement>(null);
   const zoom = useCanvasStore((state) => state.zoom);
-
-  const handleMouseDown = (e: React.MouseEvent) => {
-    if (e.target instanceof HTMLElement && e.target.contentEditable === 'true') return;
-    setIsDragging(true);
-    setStartPos({ x: e.clientX, y: e.clientY });
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!isDragging) return;
-    const dx = (e.clientX - startPos.x) / zoom;
-    const dy = (e.clientY - startPos.y) / zoom;
-    onMove(note.noteId, dx, dy);
-    setStartPos({ x: e.clientX, y: e.clientY });
-  };
-
-  const handleMouseUp = () => {
-    setIsDragging(false);
-  };
-
-  const handleBlur = (e: React.FocusEvent) => {
-    if (isEditable) {
-      onUpdate(note.noteId, e.target.textContent || '');
-    }
-  };
 
   return (
     <div
-      ref={noteRef}
-      className={`absolute pointer-events-auto ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+      className="absolute pointer-events-auto select-none"
       style={{
         left: note.x,
         top: note.y,
-        width: '150px',
-        minHeight: '100px',
+        width: '160px',
+        minHeight: '110px',
         backgroundColor: note.color,
-        boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-        borderRadius: '4px',
-        padding: '8px',
-        transform: 'rotate(-1deg)',
+        boxShadow: isDragging ? '0 8px 24px rgba(0,0,0,0.2)' : '0 2px 8px rgba(0,0,0,0.12)',
+        borderRadius: '6px',
+        padding: '10px',
+        cursor: isDragging ? 'grabbing' : 'grab',
+        transform: isDragging ? 'rotate(0deg) scale(1.02)' : 'rotate(-0.8deg)',
+        transition: isDragging ? 'none' : 'box-shadow 0.2s, transform 0.2s',
+        zIndex: isDragging ? 10 : 1,
       }}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
+      onMouseDown={(e) => {
+        if (e.target instanceof HTMLElement && e.target.contentEditable === 'true') return;
+        setIsDragging(true);
+        setStartPos({ x: e.clientX, y: e.clientY });
+      }}
+      onMouseMove={(e) => {
+        if (!isDragging) return;
+        const dx = (e.clientX - startPos.x) / zoom;
+        const dy = (e.clientY - startPos.y) / zoom;
+        onMove(note.noteId, dx, dy);
+        setStartPos({ x: e.clientX, y: e.clientY });
+      }}
+      onMouseUp={() => setIsDragging(false)}
+      onMouseLeave={() => setIsDragging(false)}
     >
       {isEditable && onDelete && (
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(note.noteId, note);
-          }}
-          className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-600"
+          onClick={(e) => { e.stopPropagation(); onDelete(note.noteId, note); }}
+          className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-600 transition-colors leading-none"
           style={{ lineHeight: 1 }}
         >
           ×
@@ -920,13 +682,9 @@ function DraggableNote({
       <div
         contentEditable={isEditable}
         suppressContentEditableWarning
-        onBlur={handleBlur}
-        className="w-full h-full outline-none text-sm"
-        style={{
-          color: '#1f2937',
-          fontFamily: 'sans-serif',
-          minHeight: '80px',
-        }}
+        onBlur={(e) => { if (isEditable) onUpdate(note.noteId, e.target.textContent || ''); }}
+        className="w-full h-full text-sm text-gray-800 outline-none"
+        style={{ minHeight: '80px', fontFamily: 'sans-serif', cursor: 'text' }}
       >
         {note.content}
       </div>

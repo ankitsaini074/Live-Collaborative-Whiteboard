@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { Landing } from './components/Landing';
 import { Room } from './components/Room';
+import { ToastContainer } from './components/Toast';
 
 export function App() {
   return (
@@ -9,6 +10,7 @@ export function App() {
         <Route path="/" element={<Landing />} />
         <Route path="/room/:roomId" element={<Room />} />
       </Routes>
+      <ToastContainer />
     </BrowserRouter>
   );
 }
