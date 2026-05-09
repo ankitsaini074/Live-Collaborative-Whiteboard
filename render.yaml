@@ -7,7 +7,6 @@ services:
   - type: web
     name: whiteboard-backend
     env: docker
-    dockerContext: .
     dockerfilePath: ./whiteboard/server/Dockerfile
     envVars:
       - key: PORT

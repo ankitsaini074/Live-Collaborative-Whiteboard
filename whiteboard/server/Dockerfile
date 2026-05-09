@@ -2,10 +2,10 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Copy shared types from repo root (build context is repo root)
+# Copy shared types (context is repo root)
 COPY shared ./shared
 
-# Copy server files
+# Copy server files (context is repo root)
 COPY whiteboard/server/package*.json ./
 RUN npm install
 
