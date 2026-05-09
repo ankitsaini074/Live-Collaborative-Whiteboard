@@ -8,7 +8,8 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
-# Copy source files
+# Copy shared types and source files
+COPY ../../shared /app/shared
 COPY . .
 
 # Build TypeScript
