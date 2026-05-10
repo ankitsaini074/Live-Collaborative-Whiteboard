@@ -6,7 +6,7 @@
     "dev": "npm run sync:shared && tsx watch src/index.ts",
     "sync:shared": "node -e \"const { mkdirSync, copyFileSync } = require('node:fs'); mkdirSync('shared', { recursive: true }); copyFileSync('../shared/types.ts', 'shared/types.ts');\"",
     "build": "npm run sync:shared && tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/src/index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
