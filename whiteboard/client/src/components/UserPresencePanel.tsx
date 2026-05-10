@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useCanvasStore } from '../store/canvasStore';
-import { onUserJoined, onUserLeft } from '../lib/socket';
+import { onRoomUsers, onUserJoined, onUserLeft } from '../lib/socket';
 
 interface User {
   userId: string;
@@ -22,7 +22,13 @@ export function UserPresencePanel() {
   useEffect(() => {
     if (!roomId) return;
 
-    onUserJoined((payload) => {
+    const offRoomUsers = onRoomUsers((payload) => {
+      if (payload.roomId === roomId) {
+        setUsers(payload.users);
+      }
+    });
+
+    const offUserJoined = onUserJoined((payload) => {
       if (payload.roomId === roomId) {
         setUsers((prev) => {
           if (prev.some((u) => u.userId === payload.userId)) return prev;
@@ -31,11 +37,17 @@ export function UserPresencePanel() {
       }
     });
 
-    onUserLeft((payload) => {
+    const offUserLeft = onUserLeft((payload) => {
       if (payload.roomId === roomId) {
         setUsers((prev) => prev.filter((u) => u.userId !== payload.userId));
       }
     });
+
+    return () => {
+      offRoomUsers();
+      offUserJoined();
+      offUserLeft();
+    };
   }, [roomId]);
 
   if (!roomId) return null;

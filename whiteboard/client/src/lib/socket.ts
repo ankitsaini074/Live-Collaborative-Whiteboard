@@ -13,6 +13,7 @@ import type {
   DeleteTextPayload,
   ClearBoardPayload,
   RoomStatePayload,
+  RoomUsersPayload,
   UserJoinedPayload,
   UserLeftPayload,
 } from '../../../shared/types';
@@ -132,16 +133,24 @@ export const sendClearBoard = (payload: Omit<ClearBoardPayload, 'lamportClock' |
   socket?.emit('clear-board', { ...payload, type: 'clear-board', timestamp: Date.now(), lamportClock: clock });
 };
 
-export const onRoomState = (callback: (payload: RoomStatePayload) => void): void => {
+export const onRoomState = (callback: (payload: RoomStatePayload) => void): (() => void) => {
   socket?.on('room-state', callback);
+  return () => socket?.off('room-state', callback);
 };
 
-export const onUserJoined = (callback: (payload: UserJoinedPayload) => void): void => {
+export const onRoomUsers = (callback: (payload: RoomUsersPayload) => void): (() => void) => {
+  socket?.on('room-users', callback);
+  return () => socket?.off('room-users', callback);
+};
+
+export const onUserJoined = (callback: (payload: UserJoinedPayload) => void): (() => void) => {
   socket?.on('user-joined', callback);
+  return () => socket?.off('user-joined', callback);
 };
 
-export const onUserLeft = (callback: (payload: UserLeftPayload) => void): void => {
+export const onUserLeft = (callback: (payload: UserLeftPayload) => void): (() => void) => {
   socket?.on('user-left', callback);
+  return () => socket?.off('user-left', callback);
 };
 
 export const onDrawStroke = (callback: (payload: DrawStrokePayload) => void): void => {

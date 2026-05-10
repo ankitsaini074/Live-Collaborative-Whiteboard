@@ -114,6 +114,11 @@ export interface UserLeftPayload {
   userId: string;
 }
 
+export interface RoomUsersPayload {
+  roomId: string;
+  users: UserJoinedPayload[];
+}
+
 // Socket event names
 export const SOCKET_EVENTS = {
   JOIN_ROOM: 'join-room',
@@ -129,6 +134,7 @@ export const SOCKET_EVENTS = {
   DELETE_TEXT: 'delete-text',
   CLEAR_BOARD: 'clear-board',
   ROOM_STATE: 'room-state',
+  ROOM_USERS: 'room-users',
   USER_JOINED: 'user-joined',
   USER_LEFT: 'user-left',
   REQUEST_EVENTS: 'request-events',
@@ -149,6 +155,7 @@ export type SocketEvent =
   | { type: typeof SOCKET_EVENTS.DELETE_TEXT; payload: DeleteTextPayload }
   | { type: typeof SOCKET_EVENTS.CLEAR_BOARD; payload: ClearBoardPayload }
   | { type: typeof SOCKET_EVENTS.ROOM_STATE; payload: RoomStatePayload }
+  | { type: typeof SOCKET_EVENTS.ROOM_USERS; payload: RoomUsersPayload }
   | { type: typeof SOCKET_EVENTS.USER_JOINED; payload: UserJoinedPayload }
   | { type: typeof SOCKET_EVENTS.USER_LEFT; payload: UserLeftPayload };
 

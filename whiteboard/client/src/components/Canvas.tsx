@@ -15,6 +15,7 @@ import {
 import type { Stroke, Shape, Text } from '../store/canvasStore';
 import {
   joinRoom,
+  leaveRoom,
   sendDrawStroke,
   sendDrawShape,
   sendCursorMove,
@@ -319,6 +320,7 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
 
     return () => {
       clearInterval(interval);
+      leaveRoom({ roomId, userId });
     };
   }, [roomId, userId, username, userColor]);
 

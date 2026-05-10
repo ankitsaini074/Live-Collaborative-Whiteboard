@@ -13,13 +13,23 @@ import type {
   DeleteTextPayload,
   ClearBoardPayload,
   RoomStatePayload,
+  RoomUsersPayload,
   UserJoinedPayload,
   UserLeftPayload,
 } from '../../shared/types';
 import { storeDrawEvent, getRoomEvents } from './redis.js';
 
-// Map of room -> set of connected users
-const roomUsers = new Map<string, Set<string>>();
+interface RoomUser {
+  userId: string;
+  username: string;
+  color: string;
+  socketId: string;
+}
+
+// Map of room -> users keyed by userId
+const roomUsers = new Map<string, Map<string, RoomUser>>();
+// Map of socket -> session info to cleanup disconnects
+const socketSessions = new Map<string, { roomId: string; userId: string }>();
 // Map of room -> current Lamport clock
 const roomLamportClocks = new Map<string, number>();
 
@@ -55,6 +65,27 @@ const updateRoomLamportClock = (roomId: string, clientClock?: number): number =>
   return newClock;
 };
 
+const getRoomUsersSnapshot = (roomId: string): UserJoinedPayload[] => {
+  const users = roomUsers.get(roomId);
+  if (!users) return [];
+  return Array.from(users.values()).map(({ userId, username, color }) => ({
+    roomId,
+    userId,
+    username,
+    color,
+  }));
+};
+
+const removeUserFromRoom = (roomId: string, userId: string): boolean => {
+  const users = roomUsers.get(roomId);
+  if (!users) return false;
+  const removed = users.delete(userId);
+  if (users.size === 0) {
+    roomUsers.delete(roomId);
+  }
+  return removed;
+};
+
 /**
  * Handle join-room event.
  * Adds user to room tracking, broadcasts to others, sends history.
@@ -67,18 +98,25 @@ export const handleJoinRoom = async (
   const { roomId, userId, username, color, lamportClock: clientClock } = payload;
 
   // Update Lamport clock
-  const serverClock = updateRoomLamportClock(roomId, clientClock);
+  updateRoomLamportClock(roomId, clientClock);
 
   // Join socket.io room
   socket.join(roomId);
 
-  // Track user locally
+  // Track user and socket session locally
   if (!roomUsers.has(roomId)) {
-    roomUsers.set(roomId, new Set());
+    roomUsers.set(roomId, new Map());
   }
-  roomUsers.get(roomId)!.add(userId);
+  roomUsers.get(roomId)!.set(userId, { userId, username, color, socketId: socket.id });
+  socketSessions.set(socket.id, { roomId, userId });
 
-  // Notify others in room
+  // Send current room users to the joiner
+  socket.emit('room-users', {
+    roomId,
+    users: getRoomUsersSnapshot(roomId),
+  } satisfies RoomUsersPayload);
+
+  // Notify others in room about the new user
   socket.to(roomId).emit('user-joined', {
     roomId,
     userId,
@@ -107,23 +145,19 @@ export const handleLeaveRoom = (
   const { roomId, userId } = payload;
 
   // Remove from local tracking
-  const users = roomUsers.get(roomId);
-  if (users) {
-    users.delete(userId);
-    if (users.size === 0) {
-      roomUsers.delete(roomId);
-      // Optionally keep room data for TTL expiry
-    }
-  }
+  const removed = removeUserFromRoom(roomId, userId);
+  socketSessions.delete(socket.id);
 
   // Leave socket.io room
   socket.leave(roomId);
 
-  // Notify others
-  socket.to(roomId).emit('user-left', {
-    roomId,
-    userId,
-  } satisfies UserLeftPayload);
+  // Notify others only when a user record was actually removed
+  if (removed) {
+    socket.to(roomId).emit('user-left', {
+      roomId,
+      userId,
+    } satisfies UserLeftPayload);
+  }
 };
 
 /**
@@ -434,8 +468,17 @@ export const setupSocketHandlers = (io: SocketIOServer): void => {
 
     // Handle disconnect
     socket.on('disconnect', () => {
-      // Could track user's rooms here to auto-leave
-      // For now, users must explicitly leave or room tracking times out
+      const session = socketSessions.get(socket.id);
+      if (!session) return;
+      socketSessions.delete(socket.id);
+
+      const removed = removeUserFromRoom(session.roomId, session.userId);
+      if (removed) {
+        socket.to(session.roomId).emit('user-left', {
+          roomId: session.roomId,
+          userId: session.userId,
+        } satisfies UserLeftPayload);
+      }
     });
   });
 };
