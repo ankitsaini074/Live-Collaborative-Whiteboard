@@ -2,6 +2,12 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from './Toast';
 
+const API_BASE_URL = (
+  import.meta.env.VITE_API_URL ||
+  import.meta.env.VITE_SOCKET_URL ||
+  ''
+).replace(/\/$/, '');
+
 export function Landing() {
   const [roomId, setRoomId] = useState('');
   const [loading, setLoading] = useState(false);
@@ -10,7 +16,7 @@ export function Landing() {
   const createRoom = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/rooms', {
+      const res = await fetch(`${API_BASE_URL}/api/rooms`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });

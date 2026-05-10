@@ -11,6 +11,6 @@ services:
       - key: NODE_ENV
         value: production
       - key: FRONTEND_URL
-        value: https://live-collaborative-whiteboard.vercel.app/
+        value: https://live-collaborative-whiteboard.vercel.app
       - key: REDIS_URL
         sync: false
