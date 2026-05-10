@@ -1,12 +1,12 @@
 services:
-  - type: pserv
+  - type: keyvalue
     name: whiteboard-redis
     plan: free
     ipAllowList: []
 
   - type: web
     name: whiteboard-backend
-    env: node
+    runtime: node
     rootDir: whiteboard/server
     buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
@@ -22,16 +22,16 @@ services:
           property: url
       - key: REDIS_URL
         fromService:
-          type: pserv
+          type: keyvalue
           name: whiteboard-redis
           property: connectionString
 
   - type: web
     name: whiteboard-frontend
-    env: static
+    runtime: static
     rootDir: whiteboard/client
     buildCommand: npm install && npm run build
-    publishDir: dist
+    staticPublishPath: whiteboard/client/dist
     envVars:
       - key: VITE_SOCKET_URL
         fromService:
