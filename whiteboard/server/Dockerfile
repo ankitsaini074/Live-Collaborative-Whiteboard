@@ -10,6 +10,9 @@ COPY package.json package-lock.json ./
 # Install dependencies
 RUN npm install
 
+# Build the TypeScript code
+RUN npm run build
+
 # Copy the rest of the application code to the working directory
 COPY . .
 
