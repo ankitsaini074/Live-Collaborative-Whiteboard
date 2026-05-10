@@ -1,9 +1,4 @@
 services:
-  - type: keyvalue
-    name: whiteboard-redis
-    plan: free
-    ipAllowList: []
-
   - type: web
     name: whiteboard-backend
     runtime: node
@@ -16,25 +11,6 @@ services:
       - key: NODE_ENV
         value: production
       - key: FRONTEND_URL
-        fromService:
-          type: web
-          name: whiteboard-frontend
-          property: url
+        value: https://live-collaborative-whiteboard.vercel.app/
       - key: REDIS_URL
-        fromService:
-          type: keyvalue
-          name: whiteboard-redis
-          property: connectionString
-
-  - type: web
-    name: whiteboard-frontend
-    runtime: static
-    rootDir: whiteboard/client
-    buildCommand: npm install && npm run build
-    staticPublishPath: whiteboard/client/dist
-    envVars:
-      - key: VITE_SOCKET_URL
-        fromService:
-          type: web
-          name: whiteboard-backend
-          property: url
+        sync: false
