@@ -2,9 +2,9 @@ import express from 'express';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import cors from 'cors';
-import roomsRouter from './routes/rooms';
-import { setupSocketHandlers } from './lib/socket';
-import { closeRedis } from './lib/redis';
+import roomsRouter from './routes/rooms.js';
+import { setupSocketHandlers } from './lib/socket.js';
+import { closeRedis } from './lib/redis.js';
 
 const PORT = process.env.PORT || 3001;
 const app = express();

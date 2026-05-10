@@ -16,7 +16,7 @@ import type {
   UserJoinedPayload,
   UserLeftPayload,
 } from '../../shared/types';
-import { storeDrawEvent, getRoomEvents } from './redis';
+import { storeDrawEvent, getRoomEvents } from './redis.js';
 
 // Map of room -> set of connected users
 const roomUsers = new Map<string, Set<string>>();
