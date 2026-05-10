@@ -13,6 +13,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Basic health/info routes
+app.get('/', (_req, res) => {
+  res.status(200).json({ ok: true, service: 'whiteboard-backend' });
+});
+
+app.get('/health', (_req, res) => {
+  res.status(200).json({ ok: true });
+});
+
 // Routes
 app.use('/api/rooms', roomsRouter);
 
