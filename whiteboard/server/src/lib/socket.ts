@@ -90,7 +90,7 @@ export const handleJoinRoom = async (
   const events = await getRoomEvents(roomId);
   socket.emit('room-state', {
     roomId,
-    events,
+    events: events as RoomStatePayload['events'],
     serverLamportClock: getRoomLamportClock(roomId),
   } satisfies RoomStatePayload);
 };

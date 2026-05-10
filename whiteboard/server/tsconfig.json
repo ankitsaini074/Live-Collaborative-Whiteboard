@@ -4,7 +4,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "module": "ESNext",
-    "moduleResolution": "bundler",
+    "moduleResolution": "node",
     "target": "ES2022",
     "lib": ["ES2022"],
     "outDir": "./dist",
@@ -13,5 +13,9 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src", "shared"]
+  "include": ["src", "shared"],
+  "baseUrl": "./",
+  "paths": {
+    "shared/*": ["../shared/*"]
+  }
 }
