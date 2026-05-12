@@ -163,6 +163,11 @@ export interface RoomStatePayload {
   serverLamportClock: number;
 }
 
+export interface RoomUsersPayload {
+  roomId: string;
+  users: UserJoinedPayload[];
+}
+
 export interface UserJoinedPayload {
   roomId: string;
   userId: string;
