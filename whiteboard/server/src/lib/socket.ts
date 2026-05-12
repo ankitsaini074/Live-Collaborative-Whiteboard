@@ -26,37 +26,18 @@ interface RoomUser {
   socketId: string;
 }
 
-// Map of room -> users keyed by userId
 const roomUsers = new Map<string, Map<string, RoomUser>>();
-// Map of socket -> session info to cleanup disconnects
 const socketSessions = new Map<string, { roomId: string; userId: string }>();
-// Map of room -> current Lamport clock
 const roomLamportClocks = new Map<string, number>();
 
-/**
- * Get or create Lamport clock for a room.
- */
+// userId -> socketId for targeted messaging
+const userSockets = new Map<string, string>();
+
 const getRoomLamportClock = (roomId: string): number => {
-  if (!roomLamportClocks.has(roomId)) {
-    roomLamportClocks.set(roomId, 0);
-  }
+  if (!roomLamportClocks.has(roomId)) roomLamportClocks.set(roomId, 0);
   return roomLamportClocks.get(roomId)!;
 };
 
-/**
- * Increment Lamport clock for a room.
- */
-const incrementRoomLamportClock = (roomId: string): number => {
-  const clock = getRoomLamportClock(roomId);
-  const newClock = clock + 1;
-  roomLamportClocks.set(roomId, newClock);
-  return newClock;
-};
-
-/**
- * Update Lamport clock based on client's clock.
- * Takes max of server clock and client clock, then increments.
- */
 const updateRoomLamportClock = (roomId: string, clientClock?: number): number => {
   const serverClock = getRoomLamportClock(roomId);
   const maxClock = clientClock ? Math.max(serverClock, clientClock) : serverClock;
@@ -80,16 +61,10 @@ const removeUserFromRoom = (roomId: string, userId: string): boolean => {
   const users = roomUsers.get(roomId);
   if (!users) return false;
   const removed = users.delete(userId);
-  if (users.size === 0) {
-    roomUsers.delete(roomId);
-  }
+  if (users.size === 0) roomUsers.delete(roomId);
   return removed;
 };
 
-/**
- * Handle join-room event.
- * Adds user to room tracking, broadcasts to others, sends history.
- */
 export const handleJoinRoom = async (
   socket: Socket,
   io: SocketIOServer,
@@ -97,26 +72,19 @@ export const handleJoinRoom = async (
 ): Promise<void> => {
   const { roomId, userId, username, color, lamportClock: clientClock } = payload;
 
-  // Update Lamport clock
   updateRoomLamportClock(roomId, clientClock);
-
-  // Join socket.io room
   socket.join(roomId);
 
-  // Track user and socket session locally
-  if (!roomUsers.has(roomId)) {
-    roomUsers.set(roomId, new Map());
-  }
+  if (!roomUsers.has(roomId)) roomUsers.set(roomId, new Map());
   roomUsers.get(roomId)!.set(userId, { userId, username, color, socketId: socket.id });
   socketSessions.set(socket.id, { roomId, userId });
+  userSockets.set(userId, socket.id);
 
-  // Send current room users to the joiner
   socket.emit('room-users', {
     roomId,
     users: getRoomUsersSnapshot(roomId),
   } satisfies RoomUsersPayload);
 
-  // Notify others in room about the new user
   socket.to(roomId).emit('user-joined', {
     roomId,
     userId,
@@ -124,7 +92,6 @@ export const handleJoinRoom = async (
     color,
   } satisfies UserJoinedPayload);
 
-  // Send room history (draw events) to new user
   const events = await getRoomEvents(roomId);
   socket.emit('room-state', {
     roomId,
@@ -133,344 +100,198 @@ export const handleJoinRoom = async (
   } satisfies RoomStatePayload);
 };
 
-/**
- * Handle leave-room event.
- * Removes user from tracking, broadcasts to others.
- */
 export const handleLeaveRoom = (
   socket: Socket,
   io: SocketIOServer,
   payload: LeaveRoomPayload
 ): void => {
   const { roomId, userId } = payload;
-
-  // Remove from local tracking
   const removed = removeUserFromRoom(roomId, userId);
   socketSessions.delete(socket.id);
-
-  // Leave socket.io room
+  userSockets.delete(userId);
   socket.leave(roomId);
 
-  // Notify others only when a user record was actually removed
   if (removed) {
-    socket.to(roomId).emit('user-left', {
-      roomId,
-      userId,
-    } satisfies UserLeftPayload);
+    socket.to(roomId).emit('user-left', { roomId, userId } satisfies UserLeftPayload);
   }
 };
 
-/**
- * Handle draw-stroke event.
- * Stores to Redis, broadcasts to room.
- */
 export const handleDrawStroke = async (
   socket: Socket,
   io: SocketIOServer,
   payload: DrawStrokePayload
 ): Promise<void> => {
   const { roomId, lamportClock: clientClock, ...eventData } = payload;
-
-  // Update Lamport clock and assign to event
   const clock = updateRoomLamportClock(roomId, clientClock);
   const eventWithClock = { ...eventData, lamportClock: clock, timestamp: Date.now() };
-
-  // Store to Redis
   await storeDrawEvent(roomId, eventWithClock);
-
-  // Broadcast to room (excluding sender) with server's clock
-  socket.to(roomId).emit('draw-stroke', {
-    ...payload,
-    lamportClock: clock,
-  });
+  socket.to(roomId).emit('draw-stroke', { ...payload, lamportClock: clock });
 };
 
-/**
- * Handle draw-shape event.
- * Stores to Redis, broadcasts to room.
- */
 export const handleDrawShape = async (
   socket: Socket,
   io: SocketIOServer,
   payload: DrawShapePayload
 ): Promise<void> => {
   const { roomId, lamportClock: clientClock, ...eventData } = payload;
-
   const clock = updateRoomLamportClock(roomId, clientClock);
   const eventWithClock = { ...eventData, lamportClock: clock, timestamp: Date.now() };
-
   await storeDrawEvent(roomId, eventWithClock);
-
-  socket.to(roomId).emit('draw-shape', {
-    ...payload,
-    lamportClock: clock,
-  });
+  socket.to(roomId).emit('draw-shape', { ...payload, lamportClock: clock });
 };
 
-/**
- * Handle cursor-move event.
- * Broadcasts to room without storing (transient).
- */
 export const handleCursorMove = (
   socket: Socket,
   io: SocketIOServer,
   payload: CursorMovePayload
 ): void => {
-  // Broadcast to room (excluding sender) - no storage
   socket.to(payload.roomId).emit('cursor-move', payload);
 };
 
-/**
- * Handle add-note event.
- * Stores to Redis, broadcasts to room.
- */
-export const handleAddNote = async (
-  socket: Socket,
-  io: SocketIOServer,
-  payload: AddNotePayload
-): Promise<void> => {
+export const handleAddNote = async (socket: Socket, io: SocketIOServer, payload: AddNotePayload): Promise<void> => {
   const { roomId, lamportClock: clientClock, ...eventData } = payload;
-
   const clock = updateRoomLamportClock(roomId, clientClock);
-  const eventWithClock = { ...eventData, lamportClock: clock, timestamp: Date.now() };
-
-  await storeDrawEvent(roomId, eventWithClock);
-
-  socket.to(roomId).emit('add-note', {
-    ...payload,
-    lamportClock: clock,
-  });
+  await storeDrawEvent(roomId, { ...eventData, lamportClock: clock, timestamp: Date.now() });
+  socket.to(roomId).emit('add-note', { ...payload, lamportClock: clock });
 };
 
-/**
- * Handle update-note event.
- * Stores to Redis, broadcasts to room.
- */
-export const handleUpdateNote = async (
-  socket: Socket,
-  io: SocketIOServer,
-  payload: UpdateNotePayload
-): Promise<void> => {
+export const handleUpdateNote = async (socket: Socket, io: SocketIOServer, payload: UpdateNotePayload): Promise<void> => {
   const { roomId, lamportClock: clientClock, ...eventData } = payload;
-
   const clock = updateRoomLamportClock(roomId, clientClock);
-  const eventWithClock = { ...eventData, lamportClock: clock, timestamp: Date.now() };
-
-  await storeDrawEvent(roomId, eventWithClock);
-
-  io.to(roomId).emit('update-note', {
-    ...payload,
-    lamportClock: clock,
-  });
+  await storeDrawEvent(roomId, { ...eventData, lamportClock: clock, timestamp: Date.now() });
+  io.to(roomId).emit('update-note', { ...payload, lamportClock: clock });
 };
 
-/**
- * Handle move-note event.
- * Stores to Redis, broadcasts to room.
- */
-export const handleMoveNote = async (
-  socket: Socket,
-  io: SocketIOServer,
-  payload: MoveNotePayload
-): Promise<void> => {
+export const handleMoveNote = async (socket: Socket, io: SocketIOServer, payload: MoveNotePayload): Promise<void> => {
   const { roomId, lamportClock: clientClock, ...eventData } = payload;
-
   const clock = updateRoomLamportClock(roomId, clientClock);
-  const eventWithClock = { ...eventData, lamportClock: clock, timestamp: Date.now() };
-
-  await storeDrawEvent(roomId, eventWithClock);
-
-  io.to(roomId).emit('move-note', {
-    ...payload,
-    lamportClock: clock,
-  });
+  await storeDrawEvent(roomId, { ...eventData, lamportClock: clock, timestamp: Date.now() });
+  io.to(roomId).emit('move-note', { ...payload, lamportClock: clock });
 };
 
-/**
- * Handle delete-note event.
- * Stores to Redis, broadcasts to room.
- */
-export const handleDeleteNote = async (
-  socket: Socket,
-  io: SocketIOServer,
-  payload: DeleteNotePayload
-): Promise<void> => {
+export const handleDeleteNote = async (socket: Socket, io: SocketIOServer, payload: DeleteNotePayload): Promise<void> => {
   const { roomId, lamportClock: clientClock, ...eventData } = payload;
-
   const clock = updateRoomLamportClock(roomId, clientClock);
-  const eventWithClock = { ...eventData, lamportClock: clock, timestamp: Date.now() };
-
-  await storeDrawEvent(roomId, eventWithClock);
-
-  io.to(roomId).emit('delete-note', {
-    ...payload,
-    lamportClock: clock,
-  });
+  await storeDrawEvent(roomId, { ...eventData, lamportClock: clock, timestamp: Date.now() });
+  io.to(roomId).emit('delete-note', { ...payload, lamportClock: clock });
 };
 
-/**
- * Handle add-text event.
- * Stores to Redis, broadcasts to room.
- */
-export const handleAddText = async (
-  socket: Socket,
-  io: SocketIOServer,
-  payload: AddTextPayload
-): Promise<void> => {
+export const handleAddText = async (socket: Socket, io: SocketIOServer, payload: AddTextPayload): Promise<void> => {
   const { roomId, lamportClock: clientClock, ...eventData } = payload;
-
   const clock = updateRoomLamportClock(roomId, clientClock);
-  const eventWithClock = { ...eventData, lamportClock: clock, timestamp: Date.now() };
-
-  await storeDrawEvent(roomId, eventWithClock);
-
-  socket.to(roomId).emit('add-text', {
-    ...payload,
-    lamportClock: clock,
-  });
+  await storeDrawEvent(roomId, { ...eventData, lamportClock: clock, timestamp: Date.now() });
+  socket.to(roomId).emit('add-text', { ...payload, lamportClock: clock });
 };
 
-/**
- * Handle delete-text event.
- * Stores to Redis, broadcasts to room.
- */
-export const handleDeleteText = async (
-  socket: Socket,
-  io: SocketIOServer,
-  payload: DeleteTextPayload
-): Promise<void> => {
+export const handleDeleteText = async (socket: Socket, io: SocketIOServer, payload: DeleteTextPayload): Promise<void> => {
   const { roomId, lamportClock: clientClock, ...eventData } = payload;
-
   const clock = updateRoomLamportClock(roomId, clientClock);
-  const eventWithClock = { ...eventData, lamportClock: clock, timestamp: Date.now() };
-
-  await storeDrawEvent(roomId, eventWithClock);
-
-  io.to(roomId).emit('delete-text', {
-    ...payload,
-    lamportClock: clock,
-  });
+  await storeDrawEvent(roomId, { ...eventData, lamportClock: clock, timestamp: Date.now() });
+  io.to(roomId).emit('delete-text', { ...payload, lamportClock: clock });
 };
 
-/**
- * Handle clear-board event.
- * Stores to Redis, broadcasts to room.
- */
-export const handleClearBoard = async (
-  socket: Socket,
-  io: SocketIOServer,
-  payload: ClearBoardPayload
-): Promise<void> => {
+export const handleClearBoard = async (socket: Socket, io: SocketIOServer, payload: ClearBoardPayload): Promise<void> => {
   const { roomId, lamportClock: clientClock, ...eventData } = payload;
-
   const clock = updateRoomLamportClock(roomId, clientClock);
-  const eventWithClock = { ...eventData, lamportClock: clock, timestamp: Date.now() };
-
-  await storeDrawEvent(roomId, eventWithClock);
-
-  io.to(roomId).emit('clear-board', {
-    ...payload,
-    lamportClock: clock,
-  });
+  await storeDrawEvent(roomId, { ...eventData, lamportClock: clock, timestamp: Date.now() });
+  io.to(roomId).emit('clear-board', { ...payload, lamportClock: clock });
 };
 
-/**
- * Handle request-events event for reconnection.
- * Sends events after a specific Lamport clock.
- */
+export const handleAddImage = async (socket: Socket, io: SocketIOServer, payload: any): Promise<void> => {
+  const { roomId, lamportClock: clientClock, ...eventData } = payload;
+  const clock = updateRoomLamportClock(roomId, clientClock);
+  await storeDrawEvent(roomId, { ...eventData, lamportClock: clock, timestamp: Date.now() });
+  socket.to(roomId).emit('add-image', { ...payload, lamportClock: clock });
+};
+
 export const handleRequestEvents = async (
   socket: Socket,
   payload: { roomId: string; afterClock: number }
 ): Promise<void> => {
   const { roomId, afterClock } = payload;
   const allEvents = await getRoomEvents(roomId);
-
-  // Filter events with Lamport clock greater than afterClock
   const missingEvents = allEvents.filter((e: any) =>
     e.lamportClock !== undefined && e.lamportClock > afterClock
   );
-
-  socket.emit('missing-events', {
-    roomId,
-    events: missingEvents,
-  });
+  socket.emit('missing-events', { roomId, events: missingEvents });
 };
 
-/**
- * Set up all Socket.io event handlers.
- */
+// WebRTC signaling handlers
+export const handleRTCJoinCall = (socket: Socket, io: SocketIOServer, payload: any): void => {
+  const { roomId, userId, username, color } = payload;
+  socket.to(roomId).emit('rtc:user-joined-call', { userId, username, color });
+};
+
+export const handleRTCLeaveCall = (socket: Socket, io: SocketIOServer, payload: any): void => {
+  const { roomId, userId } = payload;
+  socket.to(roomId).emit('rtc:user-left-call', { userId });
+};
+
+export const handleRTCOffer = (socket: Socket, io: SocketIOServer, payload: any): void => {
+  const { targetUserId, offer, fromUserId, roomId } = payload;
+  const targetSocketId = userSockets.get(targetUserId);
+  if (targetSocketId) {
+    io.to(targetSocketId).emit('rtc:offer', { fromUserId, offer, roomId });
+  }
+};
+
+export const handleRTCAnswer = (socket: Socket, io: SocketIOServer, payload: any): void => {
+  const { targetUserId, answer, fromUserId, roomId } = payload;
+  const targetSocketId = userSockets.get(targetUserId);
+  if (targetSocketId) {
+    io.to(targetSocketId).emit('rtc:answer', { fromUserId, answer, roomId });
+  }
+};
+
+export const handleRTCIceCandidate = (socket: Socket, io: SocketIOServer, payload: any): void => {
+  const { targetUserId, candidate, fromUserId, roomId } = payload;
+  const targetSocketId = userSockets.get(targetUserId);
+  if (targetSocketId) {
+    io.to(targetSocketId).emit('rtc:ice-candidate', { fromUserId, candidate, roomId });
+  }
+};
+
+export const handleRTCMediaState = (socket: Socket, io: SocketIOServer, payload: any): void => {
+  const { roomId, userId, audioMuted, videoOff } = payload;
+  socket.to(roomId).emit('rtc:media-state', { userId, audioMuted, videoOff });
+};
+
+export const handleEmojiReaction = (socket: Socket, io: SocketIOServer, payload: any): void => {
+  const { roomId } = payload;
+  io.to(roomId).emit('emoji-reaction', payload);
+};
+
 export const setupSocketHandlers = (io: SocketIOServer): void => {
   io.on('connection', (socket: Socket) => {
-    // Join room
-    socket.on('join-room', (payload: JoinRoomPayload) => {
-      handleJoinRoom(socket, io, payload);
-    });
+    socket.on('join-room', (payload: JoinRoomPayload) => handleJoinRoom(socket, io, payload));
+    socket.on('leave-room', (payload: LeaveRoomPayload) => handleLeaveRoom(socket, io, payload));
+    socket.on('draw-stroke', (payload: DrawStrokePayload) => handleDrawStroke(socket, io, payload));
+    socket.on('draw-shape', (payload: DrawShapePayload) => handleDrawShape(socket, io, payload));
+    socket.on('cursor-move', (payload: CursorMovePayload) => handleCursorMove(socket, io, payload));
+    socket.on('add-note', (payload: AddNotePayload) => handleAddNote(socket, io, payload));
+    socket.on('update-note', (payload: UpdateNotePayload) => handleUpdateNote(socket, io, payload));
+    socket.on('move-note', (payload: MoveNotePayload) => handleMoveNote(socket, io, payload));
+    socket.on('delete-note', (payload: DeleteNotePayload) => handleDeleteNote(socket, io, payload));
+    socket.on('add-text', (payload: AddTextPayload) => handleAddText(socket, io, payload));
+    socket.on('delete-text', (payload: DeleteTextPayload) => handleDeleteText(socket, io, payload));
+    socket.on('clear-board', (payload: ClearBoardPayload) => handleClearBoard(socket, io, payload));
+    socket.on('add-image', (payload: any) => handleAddImage(socket, io, payload));
+    socket.on('emoji-reaction', (payload: any) => handleEmojiReaction(socket, io, payload));
+    socket.on('request-events', (payload: { roomId: string; afterClock: number }) => handleRequestEvents(socket, payload));
 
-    // Leave room
-    socket.on('leave-room', (payload: LeaveRoomPayload) => {
-      handleLeaveRoom(socket, io, payload);
-    });
+    // WebRTC signaling
+    socket.on('rtc:join-call', (payload: any) => handleRTCJoinCall(socket, io, payload));
+    socket.on('rtc:leave-call', (payload: any) => handleRTCLeaveCall(socket, io, payload));
+    socket.on('rtc:offer', (payload: any) => handleRTCOffer(socket, io, payload));
+    socket.on('rtc:answer', (payload: any) => handleRTCAnswer(socket, io, payload));
+    socket.on('rtc:ice-candidate', (payload: any) => handleRTCIceCandidate(socket, io, payload));
+    socket.on('rtc:media-state', (payload: any) => handleRTCMediaState(socket, io, payload));
 
-    // Draw stroke
-    socket.on('draw-stroke', (payload: DrawStrokePayload) => {
-      handleDrawStroke(socket, io, payload);
-    });
-
-    // Draw shape
-    socket.on('draw-shape', (payload: DrawShapePayload) => {
-      handleDrawShape(socket, io, payload);
-    });
-
-    // Cursor move
-    socket.on('cursor-move', (payload: CursorMovePayload) => {
-      handleCursorMove(socket, io, payload);
-    });
-
-    // Add note
-    socket.on('add-note', (payload: AddNotePayload) => {
-      handleAddNote(socket, io, payload);
-    });
-
-    // Update note
-    socket.on('update-note', (payload: UpdateNotePayload) => {
-      handleUpdateNote(socket, io, payload);
-    });
-
-    // Move note
-    socket.on('move-note', (payload: MoveNotePayload) => {
-      handleMoveNote(socket, io, payload);
-    });
-
-    // Delete note
-    socket.on('delete-note', (payload: DeleteNotePayload) => {
-      handleDeleteNote(socket, io, payload);
-    });
-
-    // Add text
-    socket.on('add-text', (payload: AddTextPayload) => {
-      handleAddText(socket, io, payload);
-    });
-
-    // Delete text
-    socket.on('delete-text', (payload: DeleteTextPayload) => {
-      handleDeleteText(socket, io, payload);
-    });
-
-    // Clear board
-    socket.on('clear-board', (payload: ClearBoardPayload) => {
-      handleClearBoard(socket, io, payload);
-    });
-
-    // Request events (for reconnection)
-    socket.on('request-events', (payload: { roomId: string; afterClock: number }) => {
-      handleRequestEvents(socket, payload);
-    });
-
-    // Handle disconnect
     socket.on('disconnect', () => {
       const session = socketSessions.get(socket.id);
       if (!session) return;
       socketSessions.delete(socket.id);
+      userSockets.delete(session.userId);
 
       const removed = removeUserFromRoom(session.roomId, session.userId);
       if (removed) {
@@ -478,6 +299,8 @@ export const setupSocketHandlers = (io: SocketIOServer): void => {
           roomId: session.roomId,
           userId: session.userId,
         } satisfies UserLeftPayload);
+        // Also notify call participants
+        socket.to(session.roomId).emit('rtc:user-left-call', { userId: session.userId });
       }
     });
   });

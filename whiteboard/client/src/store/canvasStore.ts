@@ -46,6 +46,17 @@ export interface Text {
   lamportClock?: number;
 }
 
+export interface ImageItem {
+  imageId: string;
+  type: 'image';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+  lamportClock?: number;
+}
+
 export interface RemoteCursor {
   userId: string;
   username: string;
@@ -55,10 +66,10 @@ export interface RemoteCursor {
   lastSeen: number;
 }
 
-export type ToolType = 'brush' | 'eraser' | 'rect' | 'circle' | 'line' | 'arrow' | 'text' | 'note';
+export type ToolType = 'brush' | 'eraser' | 'rect' | 'circle' | 'line' | 'arrow' | 'text' | 'note' | 'hand';
 
 interface CanvasState {
-  strokes: (Stroke | Shape | Text)[];
+  strokes: (Stroke | Shape | Text | ImageItem)[];
   notes: Note[];
   currentStroke: DrawPoint[];
   currentShapeStart: DrawPoint | null;
@@ -111,8 +122,10 @@ interface CanvasState {
   addText: (text: Omit<Text, 'lamportClock'> & { textId?: string }) => void;
   addRemoteTextObject: (text: Text) => void;
   deleteText: (textId: string) => void;
+  addImage: (image: Omit<ImageItem, 'lamportClock'>) => void;
+  addRemoteImage: (image: ImageItem) => void;
   clearCanvas: () => void;
-  loadRoomState: (strokes: (Stroke | Shape | Text)[], notes: Note[]) => void;
+  loadRoomState: (strokes: (Stroke | Shape | Text | ImageItem)[], notes: Note[]) => void;
 
   updateRemoteCursor: (cursor: Omit<RemoteCursor, 'lastSeen'>) => void;
   removeRemoteCursor: (userId: string) => void;
@@ -169,8 +182,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   setRoomId: (roomId) => set({ roomId, lamportClock: 0, undoStack: [], redoStack: [], zoom: 1, pan: { x: 0, y: 0 } }),
   setUserInfo: (userId, username, color) => set({ userId, username, userColor: color }),
 
-  // FIX: was `set({ currentTool })` — captured outer scope instead of arg
-  setColor: (color) => set({ currentColor: color, currentTool: 'brush' }),
+  setColor: (color) => set({ currentColor: color, currentTool: get().currentTool === 'eraser' ? 'brush' : get().currentTool }),
   setSize: (size) => set({ currentSize: size }),
   setTool: (tool) => set({ currentTool: tool }),
 
@@ -244,7 +256,6 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
     return { currentStroke: [], currentShapeStart: null };
   }),
 
-  // FIX: separate action to add a locally-drawn shape
   addShape: (shape) => set((state) => ({
     strokes: [...state.strokes, shape],
   })),
@@ -312,6 +323,18 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   deleteText: (textId) => set((state) => ({
     strokes: state.strokes.filter((s) => s.type !== 'text' || (s as Text).textId !== textId),
   })),
+
+  addImage: (image) => set((state) => {
+    const clock = get().incrementLamportClock();
+    return { strokes: [...state.strokes, { ...image, lamportClock: clock }] };
+  }),
+
+  addRemoteImage: (image) => set((state) => {
+    if (image.lamportClock) get().updateLamportClock(image.lamportClock);
+    const exists = state.strokes.some((s) => s.type === 'image' && (s as ImageItem).imageId === image.imageId);
+    if (exists) return {};
+    return { strokes: [...state.strokes, image] };
+  }),
 
   clearCanvas: () => set({ strokes: [], notes: [], undoStack: [], redoStack: [] }),
 

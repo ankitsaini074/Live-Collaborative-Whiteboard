@@ -18,7 +18,6 @@ import type {
   UserLeftPayload,
 } from '../../../shared/types';
 
-// Socket instance singleton
 let socket: Socket | null = null;
 let currentRoomId: string | null = null;
 let currentLamportClock: number = 0;
@@ -35,10 +34,8 @@ export const connectSocket = (): Socket => {
     reconnectionAttempts: 5,
   });
 
-  // Handle reconnection
   socket.on('connect', () => {
     if (currentRoomId) {
-      // Request missing events after reconnection
       socket!.emit('request-events', {
         roomId: currentRoomId,
         afterClock: currentLamportClock,
@@ -53,9 +50,7 @@ export const setCurrentRoomId = (roomId: string): void => {
   currentRoomId = roomId;
 };
 
-export const getCurrentLamportClock = (): number => {
-  return currentLamportClock;
-};
+export const getCurrentLamportClock = (): number => currentLamportClock;
 
 export const updateLocalLamportClock = (clock: number): void => {
   currentLamportClock = Math.max(currentLamportClock, clock);
@@ -73,10 +68,7 @@ export const resetLamportClock = (): void => {
 export const joinRoom = (payload: JoinRoomPayload): void => {
   currentRoomId = payload.roomId;
   const s = connectSocket();
-  s.emit('join-room', {
-    ...payload,
-    lamportClock: currentLamportClock,
-  });
+  s.emit('join-room', { ...payload, lamportClock: currentLamportClock });
 };
 
 export const leaveRoom = (payload: LeaveRoomPayload): void => {
@@ -132,6 +124,34 @@ export const sendClearBoard = (payload: Omit<ClearBoardPayload, 'lamportClock' |
   const clock = incrementLocalLamportClock();
   socket?.emit('clear-board', { ...payload, type: 'clear-board', timestamp: Date.now(), lamportClock: clock });
 };
+
+export const sendAddImage = (payload: {
+  roomId: string;
+  userId: string;
+  imageId: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+}): void => {
+  const clock = incrementLocalLamportClock();
+  socket?.emit('add-image', { ...payload, type: 'add-image', timestamp: Date.now(), lamportClock: clock });
+};
+
+export const sendEmojiReaction = (payload: {
+  roomId: string;
+  userId: string;
+  username: string;
+  color: string;
+  emoji: string;
+  x: number;
+  y: number;
+}): void => {
+  socket?.emit('emoji-reaction', payload);
+};
+
+// Socket event listeners
 
 export const onRoomState = (callback: (payload: RoomStatePayload) => void): (() => void) => {
   socket?.on('room-state', callback);
@@ -224,13 +244,23 @@ export const onMissingEvents = (callback: (payload: { roomId: string; events: an
   socket?.on('missing-events', callback);
 };
 
+export const onAddImage = (callback: (payload: any) => void): void => {
+  socket?.on('add-image', (payload) => {
+    updateLocalLamportClock(payload.lamportClock);
+    callback(payload);
+  });
+};
+
+export const onEmojiReaction = (callback: (payload: any) => void): void => {
+  socket?.on('emoji-reaction', callback);
+};
+
 export const disconnectSocket = (): void => {
   currentRoomId = null;
   socket?.disconnect();
   socket = null;
 };
 
-// Throttle helper for cursor events (30ms)
 export const throttleCursor = (callback: () => void): (() => void) => {
   let lastEmit = 0;
   return () => {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { useCanvasStore, type DrawPoint } from '../store/canvasStore';
+import { useCanvasStore, type DrawPoint, type ImageItem } from '../store/canvasStore';
 import {
   drawSmoothStroke,
   drawEraserStroke,
@@ -9,8 +9,10 @@ import {
   drawArrow,
   drawText,
   drawCursor,
+  drawImage,
   resizeCanvas,
   getTransformedPoint,
+  resizeImageDataUrl,
 } from '../lib/canvas';
 import type { Stroke, Shape, Text } from '../store/canvasStore';
 import {
@@ -24,6 +26,7 @@ import {
   sendMoveNote,
   sendDeleteNote,
   sendAddText,
+  sendAddImage,
   onRoomState,
   onDrawStroke,
   onDrawShape,
@@ -36,18 +39,27 @@ import {
   onDeleteText,
   onClearBoard,
   onMissingEvents,
+  onAddImage,
   throttleCursor,
   updateLocalLamportClock,
 } from '../lib/socket';
 
-export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
+export function Canvas({ onRoomExpired, onEmojiReaction }: {
+  onRoomExpired?: () => void;
+  onEmojiReaction?: (emoji: string, x: number, y: number) => void;
+} = {}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const lastCursorPos = useRef<DrawPoint | null>(null);
   const [textInputPos, setTextInputPos] = useState<DrawPoint | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   const isPanning = useRef(false);
   const panStartPos = useRef({ x: 0, y: 0 });
+
+  // Touch support
+  const lastTouchDist = useRef<number | null>(null);
+  const lastTouchMid = useRef<{ x: number; y: number } | null>(null);
 
   const {
     strokes,
@@ -65,6 +77,8 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     addRemoteStroke,
     addRemoteShape,
     addRemoteTextObject,
+    addRemoteImage,
+    addImage,
     addNote,
     updateNote,
     moveNote,
@@ -109,7 +123,7 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Keyboard shortcuts: undo/redo, zoom reset
+  // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
@@ -132,7 +146,6 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [undo, redo, canUndo, canRedo, resetView]);
 
-  // FIX: include zoom and pan in deps so render uses fresh values
   const render = useCallback(() => {
     const ctx = ctxRef.current;
     if (!ctx) return;
@@ -163,6 +176,9 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
         drawArrow(ctx, item.startX, item.startY, item.endX, item.endY, item.color, item.size);
       } else if (item.type === 'text') {
         drawText(ctx, item.x, item.y, item.content, item.color, item.fontSize);
+      } else if (item.type === 'image') {
+        const img = item as ImageItem;
+        drawImage(ctx, img.x, img.y, img.width, img.height, img.dataUrl);
       }
     });
 
@@ -177,7 +193,7 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     render();
   }, [render]);
 
-  // Join room and setup socket listeners — with proper cleanup
+  // Socket listeners
   useEffect(() => {
     if (!roomId || !userId || !username) return;
 
@@ -187,50 +203,20 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
       if (payload.roomId !== roomId) return;
       updateLocalLamportClock(payload.serverLamportClock);
 
-      const localStrokes: (Stroke | Shape | Text)[] = [];
+      const localStrokes: (Stroke | Shape | Text | ImageItem)[] = [];
       const localNotes: any[] = [];
 
       payload.events.forEach((event: any) => {
         if (event.points) {
-          localStrokes.push({
-            type: 'stroke',
-            points: event.points,
-            color: event.color,
-            size: event.size,
-            lamportClock: event.lamportClock,
-          });
+          localStrokes.push({ type: 'stroke', points: event.points, color: event.color, size: event.size, lamportClock: event.lamportClock });
         } else if (event.type === 'rect' || event.type === 'circle' || event.type === 'line' || event.type === 'arrow') {
-          localStrokes.push({
-            type: event.type,
-            startX: event.startX,
-            startY: event.startY,
-            endX: event.endX,
-            endY: event.endY,
-            color: event.color,
-            size: event.size,
-            lamportClock: event.lamportClock,
-          });
+          localStrokes.push({ type: event.type, startX: event.startX, startY: event.startY, endX: event.endX, endY: event.endY, color: event.color, size: event.size, lamportClock: event.lamportClock });
         } else if (event.textId) {
-          localStrokes.push({
-            textId: event.textId,
-            type: 'text',
-            x: event.x,
-            y: event.y,
-            content: event.content,
-            color: event.color,
-            fontSize: event.fontSize,
-            lamportClock: event.lamportClock,
-          });
+          localStrokes.push({ textId: event.textId, type: 'text', x: event.x, y: event.y, content: event.content, color: event.color, fontSize: event.fontSize, lamportClock: event.lamportClock });
+        } else if (event.imageId) {
+          localStrokes.push({ imageId: event.imageId, type: 'image', x: event.x, y: event.y, width: event.width, height: event.height, dataUrl: event.dataUrl, lamportClock: event.lamportClock });
         } else if (event.noteId && event.type === 'add-note') {
-          localNotes.push({
-            noteId: event.noteId,
-            x: event.x,
-            y: event.y,
-            content: event.content,
-            color: event.color,
-            userId: event.userId,
-            lamportClock: event.lamportClock,
-          });
+          localNotes.push({ noteId: event.noteId, x: event.x, y: event.y, content: event.content, color: event.color, userId: event.userId, lamportClock: event.lamportClock });
         }
       });
 
@@ -249,6 +235,8 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
           addRemoteShape({ type: event.type, startX: event.startX, startY: event.startY, endX: event.endX, endY: event.endY, color: event.color, size: event.size, lamportClock: event.lamportClock });
         } else if (event.textId) {
           addRemoteTextObject({ textId: event.textId, type: 'text', x: event.x, y: event.y, content: event.content, color: event.color, fontSize: event.fontSize, lamportClock: event.lamportClock });
+        } else if (event.imageId) {
+          addRemoteImage({ imageId: event.imageId, type: 'image', x: event.x, y: event.y, width: event.width, height: event.height, dataUrl: event.dataUrl, lamportClock: event.lamportClock });
         }
       });
     };
@@ -277,17 +265,9 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
       }
     };
 
-    const handleUpdateNote = (payload: any) => {
-      if (payload.userId !== userId) updateNote(payload.noteId, payload.content);
-    };
-
-    const handleMoveNote = (payload: any) => {
-      if (payload.userId !== userId) moveNote(payload.noteId, payload.x, payload.y);
-    };
-
-    const handleDeleteNote = (payload: any) => {
-      if (payload.userId !== userId) deleteNote(payload.noteId);
-    };
+    const handleUpdateNote = (payload: any) => { if (payload.userId !== userId) updateNote(payload.noteId, payload.content); };
+    const handleMoveNote = (payload: any) => { if (payload.userId !== userId) moveNote(payload.noteId, payload.x, payload.y); };
+    const handleDeleteNote = (payload: any) => { if (payload.userId !== userId) deleteNote(payload.noteId); };
 
     const handleAddText = (payload: any) => {
       if (payload.userId !== userId && payload.roomId === roomId) {
@@ -295,12 +275,12 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
       }
     };
 
-    const handleDeleteText = (payload: any) => {
-      if (payload.userId !== userId) deleteText(payload.textId);
-    };
-
-    const handleClearBoard = (payload: any) => {
-      if (payload.roomId === roomId) clearCanvas();
+    const handleDeleteText = (payload: any) => { if (payload.userId !== userId) deleteText(payload.textId); };
+    const handleClearBoard = (payload: any) => { if (payload.roomId === roomId) clearCanvas(); };
+    const handleAddImage = (payload: any) => {
+      if (payload.userId !== userId && payload.roomId === roomId) {
+        addRemoteImage({ imageId: payload.imageId, type: 'image', x: payload.x, y: payload.y, width: payload.width, height: payload.height, dataUrl: payload.dataUrl, lamportClock: payload.lamportClock });
+      }
     };
 
     onRoomState(handleRoomState);
@@ -315,6 +295,7 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     onAddText(handleAddText);
     onDeleteText(handleDeleteText);
     onClearBoard(handleClearBoard);
+    onAddImage(handleAddImage);
 
     const interval = setInterval(() => cleanupOldCursors(), 1000);
 
@@ -324,7 +305,7 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     };
   }, [roomId, userId, username, userColor]);
 
-  // Attach wheel event non-passively for zoom
+  // Wheel zoom
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -350,7 +331,129 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     return () => canvas.removeEventListener('wheel', handleWheel);
   }, [setZoom, setPan]);
 
-  // Create throttled cursor sender
+  // Paste image from clipboard
+  useEffect(() => {
+    const handlePaste = async (e: ClipboardEvent) => {
+      const items = Array.from(e.clipboardData?.items || []);
+      const imageItem = items.find((item) => item.type.startsWith('image/'));
+      if (!imageItem) return;
+
+      const file = imageItem.getAsFile();
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const raw = ev.target?.result as string;
+        const dataUrl = await resizeImageDataUrl(raw);
+        const img = new Image();
+        img.onload = () => {
+          const state = useCanvasStore.getState();
+          const x = (200 - state.pan.x) / state.zoom;
+          const y = (200 - state.pan.y) / state.zoom;
+          const imageId = crypto.randomUUID();
+          const payload = { imageId, type: 'image' as const, x, y, width: img.width, height: img.height, dataUrl };
+          addImage(payload);
+          if (roomId) {
+            sendAddImage({ roomId, userId, imageId, x, y, width: img.width, height: img.height, dataUrl });
+          }
+        };
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(file);
+    };
+
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [roomId, userId, addImage]);
+
+  // Drag & Drop image
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+  const handleDragLeave = () => setIsDragOver(false);
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+
+    const file = Array.from(e.dataTransfer.files).find((f) => f.type.startsWith('image/'));
+    if (!file) return;
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const dropX = (e.clientX - rect.left - pan.x) / zoom;
+    const dropY = (e.clientY - rect.top - pan.y) / zoom;
+
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const raw = ev.target?.result as string;
+      const dataUrl = await resizeImageDataUrl(raw);
+      const img = new Image();
+      img.onload = () => {
+        const imageId = crypto.randomUUID();
+        const x = dropX - img.width / 2;
+        const y = dropY - img.height / 2;
+        const payload = { imageId, type: 'image' as const, x, y, width: img.width, height: img.height, dataUrl };
+        addImage(payload);
+        if (roomId) {
+          sendAddImage({ roomId, userId, imageId, x, y, width: img.width, height: img.height, dataUrl });
+        }
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Touch event handlers for pinch-to-zoom and two-finger pan
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      lastTouchDist.current = Math.hypot(dx, dy);
+      lastTouchMid.current = {
+        x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+        y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+      };
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    e.preventDefault();
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      const mid = {
+        x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+        y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+      };
+
+      if (lastTouchDist.current !== null && lastTouchMid.current !== null) {
+        const state = useCanvasStore.getState();
+        const scaleFactor = dist / lastTouchDist.current;
+        const newZoom = Math.max(0.1, Math.min(5, state.zoom * scaleFactor));
+        const zoomRatio = newZoom / state.zoom;
+
+        const panDx = mid.x - lastTouchMid.current.x;
+        const panDy = mid.y - lastTouchMid.current.y;
+        const newPanX = mid.x - (mid.x - state.pan.x) * zoomRatio + panDx;
+        const newPanY = mid.y - (mid.y - state.pan.y) * zoomRatio + panDy;
+
+        setZoom(newZoom);
+        setPan(newPanX, newPanY);
+      }
+
+      lastTouchDist.current = dist;
+      lastTouchMid.current = mid;
+    }
+  };
+
+  const handleTouchEnd = () => {
+    lastTouchDist.current = null;
+    lastTouchMid.current = null;
+  };
+
   const sendCursor = useRef(throttleCursor(() => {
     const state = useCanvasStore.getState();
     if (state.roomId && lastCursorPos.current) {
@@ -370,7 +473,7 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    if (e.button === 1) {
+    if (e.button === 1 || currentTool === 'hand') {
       isPanning.current = true;
       panStartPos.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
       canvas.setPointerCapture(e.pointerId);
@@ -418,7 +521,6 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     const ctx = ctxRef.current;
     if (!ctx) return;
 
-    // FIX: Shape preview — apply same transforms as render()
     if (currentShapeStart && (currentTool === 'rect' || currentTool === 'circle' || currentTool === 'line' || currentTool === 'arrow')) {
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -441,7 +543,7 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    if (e.button === 1) {
+    if (e.button === 1 || currentTool === 'hand') {
       isPanning.current = false;
       canvas.releasePointerCapture(e.pointerId);
       return;
@@ -465,7 +567,6 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
         });
       }
     } else if (currentShapeStart && (currentTool === 'rect' || currentTool === 'circle' || currentTool === 'line' || currentTool === 'arrow')) {
-      // FIX: Add shape locally AND send over socket
       const clock = useCanvasStore.getState().incrementLamportClock();
       const shape: Shape = {
         type: currentTool,
@@ -498,13 +599,14 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
   };
 
   const handlePointerLeave = () => {
-    if (currentStroke.length > 0) {
+    if (currentTool !== 'hand' && (currentStroke.length > 0 || currentShapeStart)) {
       endStroke();
       setCurrentShapeStart(null);
     }
   };
 
   const getCursor = () => {
+    if (currentTool === 'hand') return isPanning.current ? 'grabbing' : 'grab';
     if (isPanning.current) return 'grabbing';
     if (currentTool === 'eraser') return 'cell';
     if (currentTool === 'text') return 'text';
@@ -516,13 +618,29 @@ export function Canvas({ onRoomExpired }: { onRoomExpired?: () => void } = {}) {
     <>
       <canvas
         ref={canvasRef}
-        className="w-full h-full"
+        className={`w-full h-full transition-opacity ${isDragOver ? 'opacity-50' : 'opacity-100'}`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerLeave={handlePointerLeave}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
         style={{ touchAction: 'none', cursor: getCursor() }}
       />
+      {isDragOver && (
+        <div className="absolute inset-0 border-4 border-dashed border-blue-400 rounded-lg pointer-events-none flex items-center justify-center bg-blue-50/20">
+          <div className="bg-white rounded-xl px-6 py-4 shadow-xl flex items-center gap-3">
+            <svg className="w-8 h-8 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            <span className="text-gray-700 font-semibold">Drop image to add</span>
+          </div>
+        </div>
+      )}
       <StickyNotesOverlay />
       <TextInputOverlay
         position={textInputPos}
@@ -549,6 +667,7 @@ function TextInputOverlay({ position, onClose, onConfirm }: {
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [content, setContent] = useState('');
+  const { zoom, pan } = useCanvasStore();
 
   useEffect(() => {
     if (position) {
@@ -559,8 +678,11 @@ function TextInputOverlay({ position, onClose, onConfirm }: {
 
   if (!position) return null;
 
+  const screenX = position.x * zoom + pan.x;
+  const screenY = position.y * zoom + pan.y;
+
   return (
-    <div className="absolute pointer-events-auto" style={{ left: position.x, top: position.y }}>
+    <div className="absolute pointer-events-auto" style={{ left: screenX, top: screenY }}>
       <input
         ref={inputRef}
         type="text"
@@ -574,7 +696,7 @@ function TextInputOverlay({ position, onClose, onConfirm }: {
           if (content.trim()) onConfirm(content);
           else onClose();
         }}
-        className="bg-white/90 border border-blue-400 rounded px-2 py-1 text-sm shadow-lg outline-none min-w-32 backdrop-blur-sm"
+        className="bg-white/90 dark:bg-gray-800/90 border border-blue-400 rounded px-2 py-1 text-sm shadow-lg outline-none min-w-32 backdrop-blur-sm dark:text-white"
         placeholder="Type text…"
       />
     </div>
@@ -646,14 +768,14 @@ function DraggableNote({ note, isEditable, onUpdate, onMove, onDelete }: {
       style={{
         left: note.x,
         top: note.y,
-        width: '160px',
-        minHeight: '110px',
+        width: '170px',
+        minHeight: '120px',
         backgroundColor: note.color,
-        boxShadow: isDragging ? '0 8px 24px rgba(0,0,0,0.2)' : '0 2px 8px rgba(0,0,0,0.12)',
-        borderRadius: '6px',
+        boxShadow: isDragging ? '0 12px 32px rgba(0,0,0,0.25)' : '0 2px 10px rgba(0,0,0,0.12)',
+        borderRadius: '8px',
         padding: '10px',
         cursor: isDragging ? 'grabbing' : 'grab',
-        transform: isDragging ? 'rotate(0deg) scale(1.02)' : 'rotate(-0.8deg)',
+        transform: isDragging ? 'rotate(0deg) scale(1.03)' : 'rotate(-0.5deg)',
         transition: isDragging ? 'none' : 'box-shadow 0.2s, transform 0.2s',
         zIndex: isDragging ? 10 : 1,
       }}
@@ -675,7 +797,7 @@ function DraggableNote({ note, isEditable, onUpdate, onMove, onDelete }: {
       {isEditable && onDelete && (
         <button
           onClick={(e) => { e.stopPropagation(); onDelete(note.noteId, note); }}
-          className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-600 transition-colors leading-none"
+          className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 text-white rounded-full text-xs flex items-center justify-center hover:bg-red-600 transition-colors"
           style={{ lineHeight: 1 }}
         >
           ×
@@ -684,9 +806,9 @@ function DraggableNote({ note, isEditable, onUpdate, onMove, onDelete }: {
       <div
         contentEditable={isEditable}
         suppressContentEditableWarning
-        onBlur={(e) => { if (isEditable) onUpdate(note.noteId, e.target.textContent || ''); }}
-        className="w-full h-full text-sm text-gray-800 outline-none"
-        style={{ minHeight: '80px', fontFamily: 'sans-serif', cursor: 'text' }}
+        onBlur={(e) => onUpdate(note.noteId, e.currentTarget.textContent || '')}
+        className="w-full h-full text-sm text-gray-800 outline-none leading-relaxed min-h-12"
+        style={{ cursor: isEditable ? 'text' : 'default' }}
       >
         {note.content}
       </div>

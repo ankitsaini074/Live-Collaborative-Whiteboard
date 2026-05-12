@@ -8,7 +8,7 @@ interface User {
   color: string;
 }
 
-export function UserPresencePanel() {
+export function UserPresencePanel({ darkMode }: { darkMode?: boolean }) {
   const { roomId, userId, username, userColor } = useCanvasStore();
   const [users, setUsers] = useState<User[]>([]);
   const [collapsed, setCollapsed] = useState(false);
@@ -52,56 +52,72 @@ export function UserPresencePanel() {
 
   if (!roomId) return null;
 
+  const panelBase = darkMode
+    ? 'bg-gray-900 border-gray-700 shadow-xl shadow-black/30'
+    : 'bg-white border-gray-100 shadow-xl';
+
   return (
-    <div className="fixed right-4 top-[4.5rem] z-40">
-      <div className="bg-white rounded-xl shadow-xl border border-gray-100 overflow-hidden w-44">
-        {/* Header */}
+    <div className="fixed right-3 top-[3.75rem] z-40 animate-fade-in">
+      <div className={`rounded-xl border overflow-hidden w-44 ${panelBase}`}>
         <button
           onClick={() => setCollapsed((c) => !c)}
-          className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-gray-50 transition-colors"
+          className={`w-full flex items-center justify-between px-3 py-2.5 transition-colors ${
+            darkMode ? 'hover:bg-gray-800' : 'hover:bg-gray-50'
+          }`}
         >
           <div className="flex items-center gap-2">
-            <div className="flex -space-x-1">
-              {users.slice(0, 3).map((user) => (
+            <div className="flex -space-x-1.5">
+              {users.slice(0, 4).map((user) => (
                 <div
                   key={user.userId}
-                  className="w-5 h-5 rounded-full border-2 border-white flex items-center justify-center text-white text-[9px] font-bold shrink-0"
+                  className="w-5 h-5 rounded-full border-2 border-white dark:border-gray-900 flex items-center justify-center text-white text-[8px] font-bold shrink-0"
                   style={{ backgroundColor: user.color }}
+                  title={user.username}
                 >
                   {user.username[0]?.toUpperCase()}
                 </div>
               ))}
-              {users.length > 3 && (
-                <div className="w-5 h-5 rounded-full border-2 border-white bg-gray-200 flex items-center justify-center text-gray-500 text-[9px] font-bold">
-                  +{users.length - 3}
-                </div>
-              )}
             </div>
-            <span className="text-xs font-medium text-gray-600">{users.length} online</span>
+            <span className={`text-xs font-medium ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+              {users.length} online
+            </span>
           </div>
-          <svg
-            className={`w-3.5 h-3.5 text-gray-400 transition-transform ${collapsed ? '-rotate-90' : ''}`}
-            fill="none" viewBox="0 0 24 24" stroke="currentColor"
-          >
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
+          <div className="flex items-center gap-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <svg
+              className={`w-3.5 h-3.5 transition-transform ${darkMode ? 'text-gray-500' : 'text-gray-400'} ${collapsed ? '-rotate-90' : ''}`}
+              fill="none" viewBox="0 0 24 24" stroke="currentColor"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </div>
         </button>
 
-        {/* User list */}
         {!collapsed && (
-          <div className="border-t border-gray-100 max-h-48 overflow-y-auto">
+          <div className={`border-t max-h-52 overflow-y-auto ${darkMode ? 'border-gray-700' : 'border-gray-100'}`}>
             {users.map((user) => (
-              <div key={user.userId} className="flex items-center gap-2 px-3 py-2 hover:bg-gray-50">
+              <div
+                key={user.userId}
+                className={`flex items-center gap-2 px-3 py-2 transition-colors ${
+                  darkMode ? 'hover:bg-gray-800' : 'hover:bg-gray-50'
+                }`}
+              >
                 <div
-                  className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0"
-                  style={{ backgroundColor: user.color }}
+                  className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold shrink-0 ring-2 ring-offset-1"
+                  style={{
+                    backgroundColor: user.color,
+                    ['--tw-ring-color' as any]: user.color,
+                    ['--tw-ring-offset-color' as any]: darkMode ? '#111827' : '#fff',
+                  }}
                 >
                   {user.username[0]?.toUpperCase()}
                 </div>
                 <div className="min-w-0">
-                  <p className="text-xs font-medium text-gray-700 truncate">{user.username}</p>
+                  <p className={`text-xs font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+                    {user.username}
+                  </p>
                   {user.userId === userId && (
-                    <p className="text-[10px] text-gray-400">you</p>
+                    <p className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>you</p>
                   )}
                 </div>
               </div>
