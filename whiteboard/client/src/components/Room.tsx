@@ -6,6 +6,7 @@ import { UserPresencePanel } from './UserPresencePanel';
 import { VideoPanel } from './VideoPanel';
 import { InviteModal } from './InviteModal';
 import { EmojiReactionsOverlay, EmojiReactionsPanel } from './EmojiReactions';
+import { MiniMap } from './MiniMap';
 import { useCanvasStore } from '../store/canvasStore';
 import { useUIStore } from '../store/uiStore';
 import { useWebRTC } from '../hooks/useWebRTC';
@@ -22,14 +23,12 @@ export function Room() {
   const [roomExpired, setRoomExpired] = useState(false);
   const [showEmojiPanel, setShowEmojiPanel] = useState(false);
 
-  const { strokes, notes } = useCanvasStore();
-  const setRoomId = useCanvasStore((state) => state.setRoomId);
-  const setUserInfo = useCanvasStore((state) => state.setUserInfo);
-  const clearCanvas = useCanvasStore((state) => state.clearCanvas);
-  const storeZoom = useCanvasStore((state) => state.zoom);
-  const userColor = useCanvasStore((state) => state.userColor);
-  const userId = useCanvasStore((state) => state.userId);
-  const resetView = useCanvasStore((state) => state.resetView);
+  // Single selector call for the whole store slice we need
+  const {
+    strokes, notes,
+    setRoomId, setUserInfo, clearCanvas,
+    zoom: storeZoom, userColor, userId, resetView,
+  } = useCanvasStore();
 
   const {
     darkMode,
@@ -384,6 +383,9 @@ export function Room() {
 
       {/* Emoji reactions overlay */}
       <EmojiReactionsOverlay />
+
+      {/* Mini-map */}
+      <MiniMap darkMode={darkMode} />
 
       {/* Video panel */}
       {showVideoPanel && (

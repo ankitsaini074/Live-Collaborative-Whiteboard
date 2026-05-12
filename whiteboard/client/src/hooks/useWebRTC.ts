@@ -28,6 +28,10 @@ export function useWebRTC(roomId: string, userId: string, username: string, user
   const localStreamRef = useRef<MediaStream | null>(null);
   const socketRef = useRef(connectSocket());
 
+  // Use refs for muted/videoOff so toggle callbacks are always fresh without needing deps
+  const isMutedRef = useRef(false);
+  const isVideoOffRef = useRef(false);
+
   const createPeerConnection = useCallback((targetUserId: string): RTCPeerConnection => {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
@@ -92,16 +96,20 @@ export function useWebRTC(roomId: string, userId: string, username: string, user
       });
       localStreamRef.current = stream;
       setLocalStream(stream);
+      isMutedRef.current = false;
+      isVideoOffRef.current = false;
+      setIsMuted(false);
+      setIsVideoOff(false);
       setIsInCall(true);
 
       socketRef.current.emit('rtc:join-call', { roomId, userId, username, color: userColor });
     } catch (err: any) {
       if (err.name === 'NotAllowedError') {
-        setError('Camera/mic permission denied');
+        setError('Camera/mic permission denied. Please allow access in your browser settings.');
       } else if (err.name === 'NotFoundError') {
-        setError('No camera or microphone found');
+        setError('No camera or microphone found.');
       } else {
-        setError('Failed to access media devices');
+        setError('Could not access media devices.');
       }
     }
   }, [roomId, userId, username, userColor]);
@@ -114,34 +122,55 @@ export function useWebRTC(roomId: string, userId: string, username: string, user
     peerConnections.current.clear();
     setPeers(new Map());
     setIsInCall(false);
+    isMutedRef.current = false;
+    isVideoOffRef.current = false;
     setIsMuted(false);
     setIsVideoOff(false);
     socketRef.current.emit('rtc:leave-call', { roomId, userId });
   }, [roomId, userId]);
 
+  // Use refs so these callbacks are stable and never stale
   const toggleMute = useCallback(() => {
-    if (!localStreamRef.current) return;
-    const audioTrack = localStreamRef.current.getAudioTracks()[0];
-    if (audioTrack) {
-      audioTrack.enabled = !audioTrack.enabled;
-      setIsMuted(!audioTrack.enabled);
-      socketRef.current.emit('rtc:media-state', {
-        roomId, userId, audioMuted: !audioTrack.enabled, videoOff: isVideoOff,
-      });
-    }
-  }, [roomId, userId, isVideoOff]);
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    const audioTrack = stream.getAudioTracks()[0];
+    if (!audioTrack) return;
+
+    // Toggle: read current enabled state, invert it
+    const nowEnabled = !audioTrack.enabled;
+    audioTrack.enabled = nowEnabled;
+    const nowMuted = !nowEnabled;
+
+    isMutedRef.current = nowMuted;
+    setIsMuted(nowMuted);
+
+    socketRef.current.emit('rtc:media-state', {
+      roomId, userId,
+      audioMuted: nowMuted,
+      videoOff: isVideoOffRef.current,
+    });
+  }, [roomId, userId]);
 
   const toggleVideo = useCallback(() => {
-    if (!localStreamRef.current) return;
-    const videoTrack = localStreamRef.current.getVideoTracks()[0];
-    if (videoTrack) {
-      videoTrack.enabled = !videoTrack.enabled;
-      setIsVideoOff(!videoTrack.enabled);
-      socketRef.current.emit('rtc:media-state', {
-        roomId, userId, audioMuted: isMuted, videoOff: !videoTrack.enabled,
-      });
-    }
-  }, [roomId, userId, isMuted]);
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    const videoTrack = stream.getVideoTracks()[0];
+    if (!videoTrack) return;
+
+    // Toggle: read current enabled state, invert it
+    const nowEnabled = !videoTrack.enabled;
+    videoTrack.enabled = nowEnabled;
+    const nowVideoOff = !nowEnabled;
+
+    isVideoOffRef.current = nowVideoOff;
+    setIsVideoOff(nowVideoOff);
+
+    socketRef.current.emit('rtc:media-state', {
+      roomId, userId,
+      audioMuted: isMutedRef.current,
+      videoOff: nowVideoOff,
+    });
+  }, [roomId, userId]);
 
   useEffect(() => {
     const socket = socketRef.current;
@@ -153,7 +182,14 @@ export function useWebRTC(roomId: string, userId: string, username: string, user
       setPeers((prev) => {
         const updated = new Map(prev);
         if (!updated.has(remoteUserId)) {
-          updated.set(remoteUserId, { userId: remoteUserId, username: remoteUsername, color: remoteColor, stream: null, audioMuted: false, videoOff: false });
+          updated.set(remoteUserId, {
+            userId: remoteUserId,
+            username: remoteUsername,
+            color: remoteColor,
+            stream: null,
+            audioMuted: false,
+            videoOff: false,
+          });
         }
         return updated;
       });
@@ -171,7 +207,14 @@ export function useWebRTC(roomId: string, userId: string, username: string, user
       setPeers((prev) => {
         const updated = new Map(prev);
         if (!updated.has(fromUserId)) {
-          updated.set(fromUserId, { userId: fromUserId, username: fromUserId, color: '#6366f1', stream: null, audioMuted: false, videoOff: false });
+          updated.set(fromUserId, {
+            userId: fromUserId,
+            username: fromUserId,
+            color: '#6366f1',
+            stream: null,
+            audioMuted: false,
+            videoOff: false,
+          });
         }
         return updated;
       });
@@ -223,7 +266,8 @@ export function useWebRTC(roomId: string, userId: string, username: string, user
 
   useEffect(() => {
     return () => {
-      if (isInCall) leaveCall();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      if (localStreamRef.current) leaveCall();
     };
   }, []);
 
